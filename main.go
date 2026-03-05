@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/devstr0ke/chat-mixer/db"
+	"github.com/devstr0ke/chat-mixer/handlers"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -33,6 +34,13 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+
+	// Auth routes
+	auth := r.Group("/auth")
+	{
+		auth.POST("/register", handlers.Register)
+		auth.POST("/login", handlers.Login)
+	}
 
 	// Start server
 	port := os.Getenv("PORT")
