@@ -6,6 +6,7 @@ import (
 
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/handlers"
+	"github.com/devstr0ke/chat-mixer/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -40,6 +41,13 @@ func main() {
 	{
 		auth.POST("/register", handlers.Register)
 		auth.POST("/login", handlers.Login)
+	}
+
+	// Pool routes (protected)
+	poolGroup := r.Group("/pool", middleware.AuthRequired())
+	{
+		poolGroup.POST("/join", handlers.JoinPool)
+		poolGroup.POST("/leave", handlers.LeavePool)
 	}
 
 	// Start server
