@@ -2,31 +2,25 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 
 	_ "github.com/lib/pq"
 )
 
-// DB is the global database connection pool.
 var DB *sql.DB
 
-// Connect opens a connection to PostgreSQL and verifies it with a ping.
 func Connect(databaseURL string) {
 	var err error
 	DB, err = sql.Open("postgres", databaseURL)
 	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+		log.Fatalf("db: failed to open: %v", err)
 	}
-
 	if err = DB.Ping(); err != nil {
-		log.Fatalf("failed to ping database: %v", err)
+		log.Fatalf("db: failed to ping: %v", err)
 	}
-
-	fmt.Println("✅ Connected to PostgreSQL")
+	log.Println("db: connected")
 }
 
-// Migrate creates all tables if they don't already exist.
 func Migrate() {
 	query := `
 	CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -57,11 +51,8 @@ func Migrate() {
 		sent_at   TIMESTAMP NOT NULL DEFAULT NOW()
 	);
 	`
-
-	_, err := DB.Exec(query)
-	if err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+	if _, err := DB.Exec(query); err != nil {
+		log.Fatalf("db: migration failed: %v", err)
 	}
-
-	fmt.Println("✅ Database migrated")
+	log.Println("db: migrated")
 }

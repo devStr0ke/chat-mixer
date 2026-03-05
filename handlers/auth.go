@@ -29,7 +29,6 @@ type authResponse struct {
 	User  models.User `json:"user"`
 }
 
-// Register creates a new user and returns a JWT.
 func Register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -70,7 +69,6 @@ func Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, authResponse{Token: token, User: user})
 }
 
-// Login authenticates a user by email and password and returns a JWT.
 func Login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -104,8 +102,6 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// Clear password before responding (extra safety, already json:"-")
 	user.Password = ""
-
 	c.JSON(http.StatusOK, authResponse{Token: token, User: user})
 }

@@ -10,44 +10,31 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// GenerateToken creates a signed JWT containing the user ID.
 func GenerateToken(userID string) (string, error) {
 	claims := jwt.MapClaims{
 		"sub": userID,
 		"iat": time.Now().Unix(),
 		"exp": time.Now().Add(72 * time.Hour).Unix(),
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
 }
 
-// AuthRequired is a Gin middleware that validates the Bearer token
-// and injects the authenticated user ID into the context.
 func AuthRequired() gin.HandlerFunc {
+	secret := []byte(os.Getenv("JWT_SECRET"))
+
 	return func(c *gin.Context) {
-		// Support both header and query param (for WebSocket clients)
-		tokenStr := ""
-		header := c.GetHeader("Authorization")
-		if header != "" {
-			parts := strings.SplitN(header, " ", 2)
-			if len(parts) == 2 && parts[0] == "Bearer" {
-				tokenStr = parts[1]
-			}
-		}
-		if tokenStr == "" {
-			tokenStr = c.Query("token")
-		}
-		if tokenStr == "" {
+		raw := extractToken(c)
+		if raw == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
 			return
 		}
 
-		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		token, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
-			return []byte(os.Getenv("JWT_SECRET")), nil
+			return secret, nil
 		})
 		if err != nil || !token.Valid {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -69,4 +56,14 @@ func AuthRequired() gin.HandlerFunc {
 		c.Set("userID", sub)
 		c.Next()
 	}
+}
+
+func extractToken(c *gin.Context) string {
+	if header := c.GetHeader("Authorization"); header != "" {
+		parts := strings.SplitN(header, " ", 2)
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			return parts[1]
+		}
+	}
+	return c.Query("token")
 }

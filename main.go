@@ -13,67 +13,53 @@ import (
 )
 
 func main() {
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system environment")
-	}
+	godotenv.Load()
 
-	// Connect to PostgreSQL
 	dbURL := os.Getenv("DB_URL")
 	if dbURL == "" {
 		log.Fatal("DB_URL is not set")
 	}
 	db.Connect(dbURL)
 	defer db.DB.Close()
-
-	// Run migrations
 	db.Migrate()
 
-	// Initialise WebSocket hub
 	handlers.WSHub = handlers.NewHub()
-
-	// Start expiration worker
 	workers.StartExpirationWorker(db.DB, handlers.WSHub.CloseRoom)
 
-	// Set up Gin router
 	r := gin.Default()
 
-	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// Auth routes
 	auth := r.Group("/auth")
 	{
 		auth.POST("/register", handlers.Register)
 		auth.POST("/login", handlers.Login)
 	}
 
-	// Pool routes (protected)
-	poolGroup := r.Group("/pool", middleware.AuthRequired())
+	protected := middleware.AuthRequired()
+
+	pool := r.Group("/pool", protected)
 	{
-		poolGroup.POST("/join", handlers.JoinPool)
-		poolGroup.POST("/leave", handlers.LeavePool)
+		pool.POST("/join", handlers.JoinPool)
+		pool.POST("/leave", handlers.LeavePool)
 	}
 
-	// Room routes (protected)
-	roomGroup := r.Group("/rooms", middleware.AuthRequired())
+	rooms := r.Group("/rooms", protected)
 	{
-		roomGroup.GET("/:room_id", handlers.GetRoom)
-		roomGroup.GET("/:room_id/messages", handlers.GetMessages)
+		rooms.GET("/:room_id", handlers.GetRoom)
+		rooms.GET("/:room_id/messages", handlers.GetMessages)
 	}
 
-	// WebSocket (protected)
-	r.GET("/ws/:room_id", middleware.AuthRequired(), handlers.HandleWebSocket)
+	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)
 
-	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Chat Mixer starting on :%s\n", port)
+	log.Printf("server: starting on :%s", port)
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("failed to start server: %v", err)
+		log.Fatalf("server: %v", err)
 	}
 }

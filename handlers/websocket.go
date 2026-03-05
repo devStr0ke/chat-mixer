@@ -11,27 +11,25 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ─── Hub ────────────────────────────────────────────────────────────────────────
+// --- Hub ---
 
-// Hub maintains the set of active clients grouped by room.
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string][]*Client
 }
 
-// NewHub creates an empty hub.
+var WSHub *Hub
+
 func NewHub() *Hub {
 	return &Hub{rooms: make(map[string][]*Client)}
 }
 
-// Register adds a client to its room.
 func (h *Hub) Register(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.rooms[client.RoomID] = append(h.rooms[client.RoomID], client)
 }
 
-// Unregister removes a client. If the room is empty, it deletes the entry.
 func (h *Hub) Unregister(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -48,8 +46,7 @@ func (h *Hub) Unregister(client *Client) {
 	}
 }
 
-// Broadcast sends a message to every client in the room except the sender.
-func (h *Hub) Broadcast(roomID string, senderID string, msg []byte) {
+func (h *Hub) Broadcast(roomID, senderID string, msg []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -60,12 +57,10 @@ func (h *Hub) Broadcast(roomID string, senderID string, msg []byte) {
 		select {
 		case client.Send <- msg:
 		default:
-			// Client's buffer is full — skip to avoid blocking
 		}
 	}
 }
 
-// CloseRoom forcefully closes all connections in a room.
 func (h *Hub) CloseRoom(roomID string) {
 	h.mu.Lock()
 	clients := h.rooms[roomID]
@@ -77,10 +72,7 @@ func (h *Hub) CloseRoom(roomID string) {
 	}
 }
 
-// WSHub is the global hub instance, initialised in main.go.
-var WSHub *Hub
-
-// ─── Client ─────────────────────────────────────────────────────────────────────
+// --- Client ---
 
 const (
 	writeWait  = 10 * time.Second
@@ -89,7 +81,6 @@ const (
 	maxMsgSize = 4096
 )
 
-// Client represents a single WebSocket connection in a room.
 type Client struct {
 	UserID string
 	RoomID string
@@ -97,8 +88,6 @@ type Client struct {
 	Send   chan []byte
 }
 
-// readPump reads messages from the WebSocket, saves them to Postgres,
-// and broadcasts to the room.
 func (c *Client) readPump() {
 	defer func() {
 		WSHub.Unregister(c)
@@ -117,19 +106,16 @@ func (c *Client) readPump() {
 		if err != nil {
 			break
 		}
-
-		content := string(msg)
-		if content == "" {
+		if len(msg) == 0 {
 			continue
 		}
 
-		// Persist message
 		_, err = db.DB.Exec(
 			`INSERT INTO messages (room_id, sender_id, content) VALUES ($1, $2, $3)`,
-			c.RoomID, c.UserID, content,
+			c.RoomID, c.UserID, string(msg),
 		)
 		if err != nil {
-			log.Printf("failed to save message: %v", err)
+			log.Printf("ws: failed to save message: %v", err)
 			continue
 		}
 
@@ -137,7 +123,6 @@ func (c *Client) readPump() {
 	}
 }
 
-// writePump pumps messages from the Send channel to the WebSocket connection.
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -165,21 +150,18 @@ func (c *Client) writePump() {
 	}
 }
 
-// ─── Upgrade Handler ────────────────────────────────────────────────────────────
+// --- Upgrade Handler ---
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true }, // TODO: restrict in prod
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
-// HandleWebSocket upgrades the connection, validates the user belongs to the room,
-// and starts the read/write pumps.
 func HandleWebSocket(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID := c.Param("room_id")
 
-	// Verify the room exists, is active, not expired, and the user belongs to it
 	var isActive bool
 	var expiresAt time.Time
 	err := db.DB.QueryRow(
@@ -200,10 +182,9 @@ func HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("websocket upgrade failed: %v", err)
+		log.Printf("ws: upgrade failed: %v", err)
 		return
 	}
 
@@ -215,7 +196,6 @@ func HandleWebSocket(c *gin.Context) {
 	}
 
 	WSHub.Register(client)
-
 	go client.writePump()
 	go client.readPump()
 }

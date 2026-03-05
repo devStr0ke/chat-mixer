@@ -7,6 +7,6 @@ type User struct {
 	Pseudo    string    `json:"pseudo"`
 	Email     string    `json:"email"`
 	Country   string    `json:"country"`
-	Password  string    `json:"-"` // never exposed in JSON
+	Password  string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 }

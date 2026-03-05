@@ -25,7 +25,6 @@ type messageResponse struct {
 	SentAt   time.Time `json:"sent_at"`
 }
 
-// GetRoom returns room metadata including both users' countries.
 func GetRoom(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID := c.Param("room_id")
@@ -51,12 +50,10 @@ func GetRoom(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// GetMessages returns the message history for a room.
 func GetMessages(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID := c.Param("room_id")
 
-	// Verify the user belongs to this room
 	var exists bool
 	err := db.DB.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2))`,
@@ -69,8 +66,7 @@ func GetMessages(c *gin.Context) {
 
 	rows, err := db.DB.Query(
 		`SELECT id, sender_id, content, sent_at
-		 FROM messages
-		 WHERE room_id = $1
+		 FROM messages WHERE room_id = $1
 		 ORDER BY sent_at ASC`,
 		roomID,
 	)
