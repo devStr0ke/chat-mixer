@@ -7,6 +7,7 @@ import (
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/handlers"
 	"github.com/devstr0ke/chat-mixer/middleware"
+	"github.com/devstr0ke/chat-mixer/workers"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -14,7 +15,7 @@ import (
 func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️  No .env file found, using system environment")
+		log.Println("No .env file found, using system environment")
 	}
 
 	// Connect to PostgreSQL
@@ -27,6 +28,12 @@ func main() {
 
 	// Run migrations
 	db.Migrate()
+
+	// Initialise WebSocket hub
+	handlers.WSHub = handlers.NewHub()
+
+	// Start expiration worker
+	workers.StartExpirationWorker(db.DB, handlers.WSHub.CloseRoom)
 
 	// Set up Gin router
 	r := gin.Default()
@@ -50,12 +57,22 @@ func main() {
 		poolGroup.POST("/leave", handlers.LeavePool)
 	}
 
+	// Room routes (protected)
+	roomGroup := r.Group("/rooms", middleware.AuthRequired())
+	{
+		roomGroup.GET("/:room_id", handlers.GetRoom)
+		roomGroup.GET("/:room_id/messages", handlers.GetMessages)
+	}
+
+	// WebSocket (protected)
+	r.GET("/ws/:room_id", middleware.AuthRequired(), handlers.HandleWebSocket)
+
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("🚀 Chat Mixer starting on :%s\n", port)
+	log.Printf("Chat Mixer starting on :%s\n", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}

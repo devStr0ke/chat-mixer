@@ -19,7 +19,7 @@ type poolEntry struct {
 
 // matchPool is the in-memory waiting queue protected by a mutex.
 var (
-	pool  []poolEntry
+	pool   []poolEntry
 	poolMu sync.Mutex
 )
 
