@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
@@ -10,6 +11,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// --- Protocol ---
+
+type WSMessage struct {
+	Type    string `json:"type"`
+	Content string `json:"content,omitempty"`
+	ID      string `json:"id,omitempty"`
+}
 
 // --- Hub ---
 
@@ -61,6 +70,18 @@ func (h *Hub) Broadcast(roomID, senderID string, msg []byte) {
 	}
 }
 
+func (h *Hub) BroadcastToAll(roomID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, client := range h.rooms[roomID] {
+		select {
+		case client.Send <- msg:
+		default:
+		}
+	}
+}
+
 func (h *Hub) CloseRoom(roomID string) {
 	h.mu.Lock()
 	clients := h.rooms[roomID]
@@ -102,25 +123,74 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		_, msg, err := c.Conn.ReadMessage()
+		_, raw, err := c.Conn.ReadMessage()
 		if err != nil {
 			break
 		}
-		if len(msg) == 0 {
+		if len(raw) == 0 {
 			continue
 		}
 
-		_, err = db.DB.Exec(
-			`INSERT INTO messages (room_id, sender_id, content) VALUES ($1, $2, $3)`,
-			c.RoomID, c.UserID, string(msg),
-		)
-		if err != nil {
-			log.Printf("ws: failed to save message: %v", err)
+		var msg WSMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
 			continue
 		}
 
-		WSHub.Broadcast(c.RoomID, c.UserID, msg)
+		switch msg.Type {
+		case "message":
+			c.handleMessage(msg)
+		case "typing":
+			c.handleTyping()
+		case "read":
+			c.handleRead(msg)
+		}
 	}
+}
+
+func (c *Client) handleMessage(msg WSMessage) {
+	if msg.Content == "" {
+		return
+	}
+
+	var id string
+	var sentAt time.Time
+	err := db.DB.QueryRow(
+		`INSERT INTO messages (room_id, sender_id, content)
+		 VALUES ($1, $2, $3)
+		 RETURNING id, sent_at`,
+		c.RoomID, c.UserID, msg.Content,
+	).Scan(&id, &sentAt)
+	if err != nil {
+		log.Printf("ws: failed to save message: %v", err)
+		return
+	}
+
+	out, _ := json.Marshal(WSMessage{Type: "message", ID: id, Content: msg.Content})
+	WSHub.Broadcast(c.RoomID, c.UserID, out)
+}
+
+func (c *Client) handleTyping() {
+	out, _ := json.Marshal(WSMessage{Type: "typing"})
+	WSHub.Broadcast(c.RoomID, c.UserID, out)
+}
+
+func (c *Client) handleRead(msg WSMessage) {
+	if msg.ID == "" {
+		return
+	}
+
+	_, err := db.DB.Exec(
+		`UPDATE messages SET is_read = true
+		 WHERE id = $1 AND room_id = $2 AND sender_id != $3 AND is_read = false`,
+		msg.ID, c.RoomID, c.UserID,
+	)
+	if err != nil {
+		log.Printf("ws: failed to mark read: %v", err)
+		return
+	}
+
+	out, _ := json.Marshal(WSMessage{Type: "read", ID: msg.ID})
+	WSHub.Broadcast(c.RoomID, c.UserID, out)
 }
 
 func (c *Client) writePump() {

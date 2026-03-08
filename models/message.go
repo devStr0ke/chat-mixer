@@ -7,5 +7,6 @@ type Message struct {
 	RoomID   string    `json:"room_id"`
 	SenderID string    `json:"sender_id"`
 	Content  string    `json:"content"`
+	IsRead   bool      `json:"is_read"`
 	SentAt   time.Time `json:"sent_at"`
 }

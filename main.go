@@ -51,6 +51,8 @@ func main() {
 		rooms.GET("/me", handlers.GetMyRooms)
 		rooms.GET("/:room_id", handlers.GetRoom)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
+		rooms.PATCH("/:room_id/name", handlers.RenameRoom)
+		rooms.DELETE("/:room_id", handlers.DeleteRoom)
 	}
 
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)
