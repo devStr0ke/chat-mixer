@@ -48,6 +48,7 @@ func main() {
 
 	rooms := r.Group("/rooms", protected)
 	{
+		rooms.GET("/me", handlers.GetMyRooms)
 		rooms.GET("/:room_id", handlers.GetRoom)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
 	}

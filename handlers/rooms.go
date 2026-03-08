@@ -25,6 +25,37 @@ type messageResponse struct {
 	SentAt   time.Time `json:"sent_at"`
 }
 
+func GetMyRooms(c *gin.Context) {
+	userID := c.GetString("userID")
+
+	rows, err := db.DB.Query(
+		`SELECT r.id, ua.country, ub.country, r.created_at, r.expires_at, r.is_active
+		 FROM rooms r
+		 JOIN users ua ON ua.id = r.user_a_id
+		 JOIN users ub ON ub.id = r.user_b_id
+		 WHERE (r.user_a_id = $1 OR r.user_b_id = $1) AND r.is_active = true
+		 ORDER BY r.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch rooms"})
+		return
+	}
+	defer rows.Close()
+
+	rooms := make([]roomInfoResponse, 0)
+	for rows.Next() {
+		var r roomInfoResponse
+		if err := rows.Scan(&r.ID, &r.CountryA, &r.CountryB, &r.CreatedAt, &r.ExpiresAt, &r.IsActive); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
+			return
+		}
+		rooms = append(rooms, r)
+	}
+
+	c.JSON(http.StatusOK, rooms)
+}
+
 func GetRoom(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID := c.Param("room_id")
