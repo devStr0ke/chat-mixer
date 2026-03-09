@@ -167,6 +167,12 @@ func (c *Client) handleMessage(msg WSMessage) {
 
 	out, _ := json.Marshal(WSMessage{Type: "message", ID: id, Content: msg.Content})
 	WSHub.Broadcast(c.RoomID, c.UserID, out)
+
+	ack, _ := json.Marshal(WSMessage{Type: "message_ack", ID: id})
+	select {
+	case c.Send <- ack:
+	default:
+	}
 }
 
 func (c *Client) handleTyping() {
