@@ -172,24 +172,22 @@ func DeleteRoom(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID := c.Param("room_id")
 
-	result, err := db.DB.Exec(
-		`UPDATE rooms SET is_active = false
+	var userAID, userBID string
+	err := db.DB.QueryRow(
+		`SELECT user_a_id, user_b_id FROM rooms
 		 WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) AND is_active = true`,
 		roomID, userID,
-	)
+	).Scan(&userAID, &userBID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete room"})
-		return
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "room not found"})
 		return
 	}
 
 	db.DB.Exec(`DELETE FROM messages WHERE room_id = $1`, roomID)
+	db.DB.Exec(`UPDATE rooms SET is_active = false WHERE id = $1`, roomID)
+
 	WSHub.CloseRoom(roomID)
+	WSHub.NotifyRoomClosed(roomID, userAID, userBID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "room deleted"})
 }

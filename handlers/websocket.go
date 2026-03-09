@@ -18,19 +18,30 @@ type WSMessage struct {
 	Type    string `json:"type"`
 	Content string `json:"content,omitempty"`
 	ID      string `json:"id,omitempty"`
+	RoomID  string `json:"room_id,omitempty"`
 }
 
 // --- Hub ---
 
+type NotifClient struct {
+	UserID string
+	Conn   *websocket.Conn
+	Send   chan []byte
+}
+
 type Hub struct {
-	mu    sync.RWMutex
-	rooms map[string][]*Client
+	mu     sync.RWMutex
+	rooms  map[string][]*Client
+	notifs map[string][]*NotifClient // userID -> connections
 }
 
 var WSHub *Hub
 
 func NewHub() *Hub {
-	return &Hub{rooms: make(map[string][]*Client)}
+	return &Hub{
+		rooms:  make(map[string][]*Client),
+		notifs: make(map[string][]*NotifClient),
+	}
 }
 
 func (h *Hub) Register(client *Client) {
@@ -79,6 +90,59 @@ func (h *Hub) BroadcastToAll(roomID string, msg []byte) {
 		case client.Send <- msg:
 		default:
 		}
+	}
+}
+
+func (h *Hub) RegisterNotif(nc *NotifClient) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notifs[nc.UserID] = append(h.notifs[nc.UserID], nc)
+}
+
+func (h *Hub) UnregisterNotif(nc *NotifClient) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients := h.notifs[nc.UserID]
+	for i, c := range clients {
+		if c == nc {
+			h.notifs[nc.UserID] = append(clients[:i], clients[i+1:]...)
+			break
+		}
+	}
+	if len(h.notifs[nc.UserID]) == 0 {
+		delete(h.notifs, nc.UserID)
+	}
+}
+
+func (h *Hub) NotifyUser(userID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, nc := range h.notifs[userID] {
+		select {
+		case nc.Send <- msg:
+		default:
+		}
+	}
+}
+
+func (h *Hub) IsUserInRoom(userID, roomID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, client := range h.rooms[roomID] {
+		if client.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) NotifyRoomClosed(roomID string, userIDs ...string) {
+	out, _ := json.Marshal(WSMessage{Type: "room_closed", RoomID: roomID})
+	for _, uid := range userIDs {
+		h.NotifyUser(uid, out)
 	}
 }
 
@@ -172,6 +236,18 @@ func (c *Client) handleMessage(msg WSMessage) {
 	select {
 	case c.Send <- ack:
 	default:
+	}
+
+	var otherUserID string
+	_ = db.DB.QueryRow(
+		`SELECT CASE WHEN user_a_id = $1 THEN user_b_id ELSE user_a_id END
+		 FROM rooms WHERE id = $2`,
+		c.UserID, c.RoomID,
+	).Scan(&otherUserID)
+
+	if otherUserID != "" && !WSHub.IsUserInRoom(otherUserID, c.RoomID) {
+		notif, _ := json.Marshal(WSMessage{Type: "new_message", RoomID: c.RoomID, ID: c.UserID})
+		WSHub.NotifyUser(otherUserID, notif)
 	}
 }
 
@@ -274,4 +350,73 @@ func HandleWebSocket(c *gin.Context) {
 	WSHub.Register(client)
 	go client.writePump()
 	go client.readPump()
+}
+
+// --- Notification WebSocket ---
+
+func (nc *NotifClient) readPump() {
+	defer func() {
+		WSHub.UnregisterNotif(nc)
+		nc.Conn.Close()
+	}()
+
+	nc.Conn.SetReadLimit(512)
+	nc.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	nc.Conn.SetPongHandler(func(string) error {
+		nc.Conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	for {
+		if _, _, err := nc.Conn.ReadMessage(); err != nil {
+			break
+		}
+	}
+}
+
+func (nc *NotifClient) writePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		nc.Conn.Close()
+	}()
+
+	for {
+		select {
+		case msg, ok := <-nc.Send:
+			nc.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				nc.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := nc.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			nc.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := nc.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func HandleNotificationWS(c *gin.Context) {
+	userID := c.GetString("userID")
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("ws: notification upgrade failed: %v", err)
+		return
+	}
+
+	nc := &NotifClient{
+		UserID: userID,
+		Conn:   conn,
+		Send:   make(chan []byte, 256),
+	}
+
+	WSHub.RegisterNotif(nc)
+	go nc.writePump()
+	go nc.readPump()
 }
