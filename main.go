@@ -24,7 +24,7 @@ func main() {
 	db.Migrate()
 
 	handlers.WSHub = handlers.NewHub()
-	workers.StartExpirationWorker(db.DB, handlers.WSHub.CloseRoom)
+	workers.StartExpirationWorker(db.DB, handlers.WSHub.CloseRoom, handlers.WSHub.NotifyRoomClosed)
 
 	r := gin.Default()
 
@@ -48,10 +48,14 @@ func main() {
 
 	rooms := r.Group("/rooms", protected)
 	{
+		rooms.GET("/me", handlers.GetMyRooms)
 		rooms.GET("/:room_id", handlers.GetRoom)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
+		rooms.PATCH("/:room_id/name", handlers.RenameRoom)
+		rooms.DELETE("/:room_id", handlers.DeleteRoom)
 	}
 
+	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)
 
 	port := os.Getenv("PORT")

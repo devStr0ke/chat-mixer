@@ -48,11 +48,24 @@ func Migrate() {
 		room_id   UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
 		sender_id UUID NOT NULL REFERENCES users(id),
 		content   TEXT NOT NULL,
+		is_read   BOOLEAN NOT NULL DEFAULT false,
 		sent_at   TIMESTAMP NOT NULL DEFAULT NOW()
 	);
 	`
 	if _, err := DB.Exec(query); err != nil {
 		log.Fatalf("db: migration failed: %v", err)
 	}
+
+	migrations := []string{
+		`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS user_a_room_name VARCHAR(64) NOT NULL DEFAULT 'Stranger'`,
+		`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS user_b_room_name VARCHAR(64) NOT NULL DEFAULT 'Stranger'`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT false`,
+	}
+	for _, m := range migrations {
+		if _, err := DB.Exec(m); err != nil {
+			log.Fatalf("db: migration failed: %v", err)
+		}
+	}
+
 	log.Println("db: migrated")
 }

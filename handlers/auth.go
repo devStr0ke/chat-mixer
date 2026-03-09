@@ -20,8 +20,8 @@ type registerRequest struct {
 }
 
 type loginRequest struct {
-	Email    string `json:"email"    binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Identifier string `json:"identifier" binding:"required"`
+	Password   string `json:"password"   binding:"required"`
 }
 
 type authResponse struct {
@@ -79,11 +79,11 @@ func Login(c *gin.Context) {
 	var user models.User
 	err := db.DB.QueryRow(
 		`SELECT id, pseudo, email, country, password, created_at
-		 FROM users WHERE email = $1`,
-		req.Email,
+		 FROM users WHERE email = $1 OR pseudo = $1`,
+		req.Identifier,
 	).Scan(&user.ID, &user.Pseudo, &user.Email, &user.Country, &user.Password, &user.CreatedAt)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 	if err != nil {
@@ -92,7 +92,7 @@ func Login(c *gin.Context) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
