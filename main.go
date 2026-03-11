@@ -55,6 +55,12 @@ func main() {
 		rooms.DELETE("/:room_id", handlers.DeleteRoom)
 	}
 
+	messages := r.Group("/messages", protected)
+	{
+		messages.POST("/:message_id/reactions", handlers.ReactToMessage)
+		messages.DELETE("/:message_id/reactions", handlers.RemoveReaction)
+	}
+
 	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)
 
