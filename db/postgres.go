@@ -60,6 +60,14 @@ func Migrate() {
 		`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS user_a_room_name VARCHAR(64) NOT NULL DEFAULT 'Stranger'`,
 		`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS user_b_room_name VARCHAR(64) NOT NULL DEFAULT 'Stranger'`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT false`,
+		`CREATE TABLE IF NOT EXISTS message_reactions (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			user_id    UUID NOT NULL REFERENCES users(id),
+			emoji      VARCHAR(32) NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE (message_id, user_id)
+		)`,
 	}
 	for _, m := range migrations {
 		if _, err := DB.Exec(m); err != nil {

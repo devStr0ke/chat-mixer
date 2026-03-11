@@ -20,12 +20,18 @@ type roomInfoResponse struct {
 	IsActive      bool      `json:"is_active"`
 }
 
+type reactionResponse struct {
+	UserID string `json:"user_id"`
+	Emoji  string `json:"emoji"`
+}
+
 type messageResponse struct {
-	ID       string    `json:"id"`
-	SenderID string    `json:"sender_id"`
-	Content  string    `json:"content"`
-	IsRead   bool      `json:"is_read"`
-	SentAt   time.Time `json:"sent_at"`
+	ID        string             `json:"id"`
+	SenderID  string             `json:"sender_id"`
+	Content   string             `json:"content"`
+	IsRead    bool               `json:"is_read"`
+	SentAt    time.Time          `json:"sent_at"`
+	Reactions []reactionResponse `json:"reactions"`
 }
 
 func GetMyRooms(c *gin.Context) {
@@ -103,8 +109,12 @@ func GetMessages(c *gin.Context) {
 	}
 
 	rows, err := db.DB.Query(
-		`SELECT id, sender_id, content, is_read, sent_at
-		 FROM messages WHERE room_id = $1 ORDER BY sent_at ASC`,
+		`SELECT m.id, m.sender_id, m.content, m.is_read, m.sent_at,
+		        r.user_id, r.emoji
+		 FROM messages m
+		 LEFT JOIN message_reactions r ON r.message_id = m.id
+		 WHERE m.room_id = $1
+		 ORDER BY m.sent_at ASC, r.created_at ASC`,
 		roomID,
 	)
 	if err != nil {
@@ -113,14 +123,42 @@ func GetMessages(c *gin.Context) {
 	}
 	defer rows.Close()
 
+	index := make(map[string]int)
 	messages := make([]messageResponse, 0)
+
 	for rows.Next() {
-		var m messageResponse
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.Content, &m.IsRead, &m.SentAt); err != nil {
+		var (
+			id, senderID, content string
+			isRead                bool
+			sentAt                time.Time
+			reactionUserID        sql.NullString
+			reactionEmoji         sql.NullString
+		)
+		if err := rows.Scan(&id, &senderID, &content, &isRead, &sentAt, &reactionUserID, &reactionEmoji); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
 		}
-		messages = append(messages, m)
+
+		i, seen := index[id]
+		if !seen {
+			messages = append(messages, messageResponse{
+				ID:        id,
+				SenderID:  senderID,
+				Content:   content,
+				IsRead:    isRead,
+				SentAt:    sentAt,
+				Reactions: make([]reactionResponse, 0),
+			})
+			i = len(messages) - 1
+			index[id] = i
+		}
+
+		if reactionUserID.Valid && reactionEmoji.Valid {
+			messages[i].Reactions = append(messages[i].Reactions, reactionResponse{
+				UserID: reactionUserID.String,
+				Emoji:  reactionEmoji.String,
+			})
+		}
 	}
 
 	c.JSON(http.StatusOK, messages)
