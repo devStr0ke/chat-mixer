@@ -19,6 +19,7 @@ type WSMessage struct {
 	Content string `json:"content,omitempty"`
 	ID      string `json:"id,omitempty"`
 	RoomID  string `json:"room_id,omitempty"`
+	Count   int    `json:"count,omitempty"`
 }
 
 // --- Hub ---
@@ -144,6 +145,21 @@ func (h *Hub) NotifyRoomClosed(roomID string, userIDs ...string) {
 	for _, uid := range userIDs {
 		h.NotifyUser(uid, out)
 	}
+}
+
+func (h *Hub) BroadcastOnlineCount() {
+	h.mu.RLock()
+	count := len(h.notifs)
+	out, _ := json.Marshal(WSMessage{Type: "online_count", Count: count})
+	for _, clients := range h.notifs {
+		for _, nc := range clients {
+			select {
+			case nc.Send <- out:
+			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
 }
 
 func (h *Hub) CloseRoom(roomID string) {
@@ -357,6 +373,7 @@ func HandleWebSocket(c *gin.Context) {
 func (nc *NotifClient) readPump() {
 	defer func() {
 		WSHub.UnregisterNotif(nc)
+		WSHub.BroadcastOnlineCount()
 		nc.Conn.Close()
 	}()
 
@@ -417,6 +434,7 @@ func HandleNotificationWS(c *gin.Context) {
 	}
 
 	WSHub.RegisterNotif(nc)
+	WSHub.BroadcastOnlineCount()
 	go nc.writePump()
 	go nc.readPump()
 }
