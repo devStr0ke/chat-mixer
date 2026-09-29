@@ -15,11 +15,12 @@ import (
 )
 
 type lastMessageResponse struct {
-	ID           string    `json:"id"`
-	SenderID     string    `json:"sender_id"`
-	SenderPseudo string    `json:"sender_pseudo"`
-	Content      string    `json:"content"`
-	SentAt       time.Time `json:"sent_at"`
+	ID              string    `json:"id"`
+	SenderID        string    `json:"sender_id"`
+	SenderPseudo    string    `json:"sender_pseudo"`
+	Content         string    `json:"content"`
+	AttachmentCount int       `json:"attachment_count"`
+	SentAt          time.Time `json:"sent_at"`
 }
 
 type roomSummaryResponse struct {
@@ -52,12 +53,13 @@ type reactionResponse struct {
 }
 
 type messageResponse struct {
-	ID           string             `json:"id"`
-	SenderID     string             `json:"sender_id"`
-	SenderPseudo string             `json:"sender_pseudo"`
-	Content      string             `json:"content"`
-	SentAt       time.Time          `json:"sent_at"`
-	Reactions    []reactionResponse `json:"reactions"`
+	ID           string               `json:"id"`
+	SenderID     string               `json:"sender_id"`
+	SenderPseudo string               `json:"sender_pseudo"`
+	Content      string               `json:"content"`
+	SentAt       time.Time            `json:"sent_at"`
+	Reactions    []reactionResponse   `json:"reactions"`
+	Attachments  []attachmentResponse `json:"attachments"`
 }
 
 type messagePageResponse struct {
@@ -203,7 +205,8 @@ func GetMyRooms(c *gin.Context) {
 		        (SELECT COUNT(*) FROM room_members WHERE room_id = r.id),
 		        (SELECT COUNT(*) FROM messages m
 		         WHERE m.room_id = r.id AND m.sender_id <> $1 AND m.sent_at > rm.last_read_at),
-		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.sent_at
+		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.sent_at,
+		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
 		 LEFT JOIN LATERAL (
@@ -229,19 +232,21 @@ func GetMyRooms(c *gin.Context) {
 			r                                   roomSummaryResponse
 			lmID, lmSender, lmPseudo, lmContent sql.NullString
 			lmSentAt                            sql.NullTime
+			lmAttachments                       int
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt, &lmAttachments); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
 		if lmID.Valid {
 			r.LastMessage = &lastMessageResponse{
-				ID:           lmID.String,
-				SenderID:     lmSender.String,
-				SenderPseudo: lmPseudo.String,
-				Content:      lmContent.String,
-				SentAt:       lmSentAt.Time,
+				ID:              lmID.String,
+				SenderID:        lmSender.String,
+				SenderPseudo:    lmPseudo.String,
+				Content:         lmContent.String,
+				AttachmentCount: lmAttachments,
+				SentAt:          lmSentAt.Time,
 			}
 		}
 		rooms = append(rooms, r)
@@ -346,6 +351,7 @@ func GetMessages(c *gin.Context) {
 			return
 		}
 		m.Reactions = make([]reactionResponse, 0)
+		m.Attachments = make([]attachmentResponse, 0)
 		messages = append(messages, m)
 	}
 	rows.Close()
@@ -389,6 +395,15 @@ func GetMessages(c *gin.Context) {
 			}
 			i := index[messageID]
 			messages[i].Reactions = append(messages[i].Reactions, r)
+		}
+
+		attachments, err := attachmentsByMessage(ids)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch attachments"})
+			return
+		}
+		for messageID, list := range attachments {
+			messages[index[messageID]].Attachments = list
 		}
 	}
 
@@ -459,6 +474,7 @@ func DeleteRoom(c *gin.Context) {
 	}
 
 	WSHub.CloseRoom(roomID)
+	deleteRoomFiles(roomID)
 	WSHub.NotifyUsers(mustJSON(WSMessage{Type: "room_removed", RoomID: roomID}), memberIDs...)
 	WSHub.NotifyUsers(mustJSON(WSMessage{Type: "invitation", RoomID: roomID}), inviteeIDs...)
 
@@ -569,6 +585,7 @@ func RemoveMember(c *gin.Context) {
 
 	if roomEmpty {
 		WSHub.CloseRoom(roomID)
+		deleteRoomFiles(roomID)
 		WSHub.NotifyUsers(mustJSON(WSMessage{Type: "invitation", RoomID: roomID}), inviteeIDs...)
 	} else {
 		WSHub.BroadcastToAll(roomID, mustJSON(WSMessage{Type: "member_left", RoomID: roomID, UserID: targetID}))

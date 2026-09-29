@@ -1,0 +1,20 @@
+# Single-node Garage for local development. Secrets come from env vars
+# (see docker-compose.yml); the bucket and access key are created on startup.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+
+replication_factor = 1
+consistency_mode = "consistent"
+
+rpc_bind_addr = "[::]:3901"
+rpc_secret_file = "env:GARAGE_RPC_SECRET"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token_file = "env:GARAGE_ADMIN_TOKEN"

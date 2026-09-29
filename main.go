@@ -7,6 +7,8 @@ import (
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/handlers"
 	"github.com/devstr0ke/chat-mixer/middleware"
+	"github.com/devstr0ke/chat-mixer/storage"
+	"github.com/devstr0ke/chat-mixer/workers"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -22,9 +24,15 @@ func main() {
 	defer db.DB.Close()
 	db.Migrate()
 
+	storage.Connect()
+	if storage.Enabled() {
+		workers.StartAttachmentCleanup(db.DB)
+	}
+
 	handlers.WSHub = handlers.NewHub()
 
 	r := gin.Default()
+	r.MaxMultipartMemory = 12 << 20
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -51,6 +59,7 @@ func main() {
 		rooms.PATCH("/:room_id", handlers.UpdateRoom)
 		rooms.DELETE("/:room_id", handlers.DeleteRoom)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
+		rooms.POST("/:room_id/attachments", handlers.UploadAttachment)
 		rooms.GET("/:room_id/invitations", handlers.GetRoomInvitations)
 		rooms.POST("/:room_id/invitations", handlers.InviteToRoom)
 		rooms.DELETE("/:room_id/members/:user_id", handlers.RemoveMember)
@@ -68,6 +77,8 @@ func main() {
 		messages.POST("/:message_id/reactions", handlers.ReactToMessage)
 		messages.DELETE("/:message_id/reactions", handlers.RemoveReaction)
 	}
+
+	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
 
 	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)

@@ -21,10 +21,21 @@ func GenerateToken(userID string) (string, error) {
 }
 
 func AuthRequired() gin.HandlerFunc {
+	return authenticate(false)
+}
+
+// AuthRequiredOrCookie also accepts the frontend's token cookie, for resources
+// the browser loads by itself (e.g. <img> tags) and that can't send headers.
+// Only use it on read-only routes.
+func AuthRequiredOrCookie() gin.HandlerFunc {
+	return authenticate(true)
+}
+
+func authenticate(allowCookie bool) gin.HandlerFunc {
 	secret := []byte(os.Getenv("JWT_SECRET"))
 
 	return func(c *gin.Context) {
-		raw := extractToken(c)
+		raw := extractToken(c, allowCookie)
 		if raw == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
 			return
@@ -58,12 +69,20 @@ func AuthRequired() gin.HandlerFunc {
 	}
 }
 
-func extractToken(c *gin.Context) string {
+func extractToken(c *gin.Context, allowCookie bool) string {
 	if header := c.GetHeader("Authorization"); header != "" {
 		parts := strings.SplitN(header, " ", 2)
 		if len(parts) == 2 && parts[0] == "Bearer" {
 			return parts[1]
 		}
 	}
-	return c.Query("token")
+	if token := c.Query("token"); token != "" {
+		return token
+	}
+	if allowCookie {
+		if token, err := c.Cookie("token"); err == nil {
+			return token
+		}
+	}
+	return ""
 }

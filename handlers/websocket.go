@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/lib/pq"
 )
 
 // --- Protocol ---
@@ -29,6 +31,9 @@ type WSMessage struct {
 	SentAt       *time.Time `json:"sent_at,omitempty"`
 	ReadAt       *time.Time `json:"read_at,omitempty"`
 	Count        int        `json:"count,omitempty"`
+
+	AttachmentIDs []string             `json:"attachment_ids,omitempty"` // client → server
+	Attachments   []attachmentResponse `json:"attachments,omitempty"`    // server → client
 }
 
 // --- Hub ---
@@ -270,18 +275,11 @@ func (c *Client) readPump() {
 
 func (c *Client) handleMessage(msg WSMessage) {
 	content := strings.TrimSpace(msg.Content)
-	if content == "" {
+	if content == "" && len(msg.AttachmentIDs) == 0 {
 		return
 	}
 
-	var id string
-	var sentAt time.Time
-	err := db.DB.QueryRow(
-		`INSERT INTO messages (room_id, sender_id, content)
-		 VALUES ($1, $2, $3)
-		 RETURNING id, sent_at`,
-		c.RoomID, c.UserID, content,
-	).Scan(&id, &sentAt)
+	id, sentAt, attachments, err := c.saveMessage(content, msg.AttachmentIDs)
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
 		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
@@ -296,6 +294,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		SenderPseudo: c.Pseudo,
 		Content:      content,
 		SentAt:       &sentAt,
+		Attachments:  attachments,
 	}
 	WSHub.Broadcast(c.RoomID, c, mustJSON(out))
 	c.send(mustJSON(WSMessage{Type: "message_ack", ID: id, ClientID: msg.ClientID, SentAt: &sentAt}))
@@ -315,6 +314,72 @@ func (c *Client) handleMessage(msg WSMessage) {
 			WSHub.NotifyUser(uid, notif)
 		}
 	}
+}
+
+var errInvalidAttachments = errors.New("invalid attachments")
+
+// saveMessage stores a message and claims the sender's uploaded attachments
+// for it, all or nothing.
+func (c *Client) saveMessage(content string, attachmentIDs []string) (id string, sentAt time.Time, attachments []attachmentResponse, err error) {
+	if len(attachmentIDs) > maxAttachmentsPerMsg {
+		return "", time.Time{}, nil, errInvalidAttachments
+	}
+	seen := make(map[string]bool, len(attachmentIDs))
+	for _, a := range attachmentIDs {
+		if !isUUID(a) || seen[a] {
+			return "", time.Time{}, nil, errInvalidAttachments
+		}
+		seen[a] = true
+	}
+
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return "", time.Time{}, nil, err
+	}
+	defer tx.Rollback()
+
+	if err = tx.QueryRow(
+		`INSERT INTO messages (room_id, sender_id, content)
+		 VALUES ($1, $2, $3)
+		 RETURNING id, sent_at`,
+		c.RoomID, c.UserID, content,
+	).Scan(&id, &sentAt); err != nil {
+		return "", time.Time{}, nil, err
+	}
+
+	if len(attachmentIDs) > 0 {
+		rows, err := tx.Query(
+			`UPDATE attachments SET message_id = $1, position = array_position($2::uuid[], id)
+			 WHERE id = ANY($2::uuid[]) AND room_id = $3 AND uploader_id = $4 AND message_id IS NULL
+			 RETURNING id, content_type, width, height, size_bytes`,
+			id, pq.Array(attachmentIDs), c.RoomID, c.UserID,
+		)
+		if err != nil {
+			return "", time.Time{}, nil, err
+		}
+		byID := make(map[string]attachmentResponse, len(attachmentIDs))
+		for rows.Next() {
+			var a attachmentResponse
+			if err := rows.Scan(&a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size); err != nil {
+				rows.Close()
+				return "", time.Time{}, nil, err
+			}
+			byID[a.ID] = a
+		}
+		rows.Close()
+		if len(byID) != len(attachmentIDs) {
+			return "", time.Time{}, nil, errInvalidAttachments
+		}
+		// keep the order the sender picked them in
+		for _, attachmentID := range attachmentIDs {
+			attachments = append(attachments, byID[attachmentID])
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", time.Time{}, nil, err
+	}
+	return id, sentAt, attachments, nil
 }
 
 func (c *Client) handleTyping() {

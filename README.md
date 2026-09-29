@@ -12,6 +12,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Any member can invite; the owner can rename the room, remove members, or delete it
 - Members can leave; if the owner leaves, ownership passes to the longest-standing member, and a room with no members left is deleted
 - Chat happens over WebSocket with typing indicators, per-member read receipts ("seen by") and emoji reactions
+- Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
 
@@ -19,7 +20,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 
 ## Requirements
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — runs PostgreSQL, pgAdmin and the API
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — runs PostgreSQL, pgAdmin, Garage and the API
 - Go 1.25+ — only if you want to run the API outside Docker
 
 ---
@@ -32,7 +33,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 cp .env.example .env
 ```
 
-Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD` and `JWT_SECRET` (`openssl rand -hex 32`), and put the same Postgres password in `DB_URL`. Docker Compose reads `.env` for the stack, and the API reads it when run with `go run .`.
+Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_SECRET`, `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN` and `S3_SECRET_KEY` (each `openssl rand -hex 32`), set `S3_ACCESS_KEY` to `GK` followed by `openssl rand -hex 16`, and put the same Postgres password in `DB_URL`. Docker Compose reads `.env` for the stack, and the API reads it when run with `go run .`.
 
 | Variable | Used by | Default |
 |---|---|---|
@@ -41,6 +42,11 @@ Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD` and `JWT_SECRET` (`openssl rand 
 | `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` | pgAdmin (required by the image) | — |
 | `PGADMIN_PORT` | host port for pgAdmin | `5051` |
 | `API_PORT` | host port for the dockerized API | `8090` |
+| `GARAGE_RPC_SECRET` / `GARAGE_ADMIN_TOKEN` | Garage | — |
+| `GARAGE_PORT` | host port for Garage's S3 API | `3900` |
+| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Garage creates them on first start; the API uses them | `chat-mixer` / — / — |
+| `S3_ENDPOINT` | `go run .` only (the dockerized API uses `http://garage:3900`). Empty disables uploads | — |
+| `S3_REGION` | API | `garage` |
 | `DB_URL` | `go run .` only | — |
 | `JWT_SECRET` | API | — |
 | `PORT` | `go run .` only | `8080` |
@@ -58,11 +64,12 @@ docker compose up -d --build
 | API | http://localhost:8090 |
 | pgAdmin | http://localhost:5051 (no login; the `chat-mixer` server is pre-registered) |
 | PostgreSQL | `localhost:5434` |
+| Garage S3 API | http://localhost:3900 (bucket `chat-mixer`) |
 
 To run the API on the host instead, start only the database and use Go:
 
 ```bash
-docker compose up -d postgres pgadmin
+docker compose up -d postgres pgadmin garage
 go run .
 ```
 
@@ -89,10 +96,13 @@ handlers/
   rooms.go            — rooms, members, message history
   invitations.go      — room invitations
   reactions.go        — message reactions
+  attachments.go      — image upload/download
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
+storage/s3.go         — S3 client for the attachments bucket
+workers/attachments.go — hourly cleanup of uploads never sent
 models/               — User, Room, RoomMember, RoomInvitation, Message
-docker-compose.yml    — postgres + pgAdmin + API
+docker-compose.yml    — postgres + pgAdmin + Garage + API
 ```
 
 ---
@@ -125,6 +135,14 @@ All protected routes require an `Authorization: Bearer <token>` header.
 | POST | `/rooms/:room_id/invitations` | member | Invite a user. Body: `pseudo` |
 | DELETE | `/rooms/:room_id/members/:user_id` | self / owner | Leave (your own id) or remove a member (owner) |
 
+### Attachments
+| Method | Route | Description |
+|---|---|---|
+| POST | `/rooms/:room_id/attachments` | Upload an image (multipart field `file`, max 10 MB). JPEG, PNG, GIF or WebP, checked from the file content. Returns `{ id, content_type, width, height, size }` |
+| GET | `/attachments/:attachment_id` | The image, for room members once it's been sent (and for its uploader before). Also accepts the `token` cookie so `<img>` tags work |
+
+Uploads are private until a message references them; ones never sent are deleted after 24 hours. Deleting a room deletes its files.
+
 ### Invitations
 | Method | Route | Description |
 |---|---|---|
@@ -155,15 +173,16 @@ WebSocket connections pass the JWT as `?token=` instead of a header.
 Send:
 ```json
 { "type": "message", "content": "hello", "client_id": "local-1" }
+{ "type": "message", "content": "", "client_id": "local-2", "attachment_ids": ["uuid", "uuid"] }
 { "type": "typing" }
 { "type": "read", "id": "message-uuid" }
 ```
 
-`read` moves your read marker up to that message. Sending a message marks the room read up to it.
+`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
 
 Receive:
 ```json
-{ "type": "message", "id": "uuid", "room_id": "uuid", "sender_id": "uuid", "sender_pseudo": "bob", "content": "hello", "sent_at": "…" }
+{ "type": "message", "id": "uuid", "room_id": "uuid", "sender_id": "uuid", "sender_pseudo": "bob", "content": "hello", "sent_at": "…", "attachments": [{ "id": "uuid", "content_type": "image/webp", "width": 2048, "height": 1365, "size": 23810 }] }
 { "type": "message_ack", "id": "uuid", "client_id": "local-1", "sent_at": "…" }
 { "type": "message_error", "client_id": "local-1" }
 { "type": "typing", "user_id": "uuid", "pseudo": "bob" }

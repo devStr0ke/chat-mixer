@@ -111,12 +111,27 @@ func Migrate() {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			UNIQUE (message_id, user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS attachments (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			room_id      UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+			uploader_id  UUID NOT NULL REFERENCES users(id),
+			message_id   UUID REFERENCES messages(id) ON DELETE CASCADE,
+			object_key   TEXT NOT NULL,
+			content_type VARCHAR(64) NOT NULL,
+			size_bytes   BIGINT NOT NULL,
+			width        INT NOT NULL,
+			height       INT NOT NULL,
+			position     INT NOT NULL DEFAULT 0,
+			created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 		upgradeLegacyRooms,
 		// read state now lives in room_members.last_read_at
 		`ALTER TABLE messages DROP COLUMN IF EXISTS is_read`,
 		`CREATE INDEX IF NOT EXISTS idx_room_members_user ON room_members (user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_room_invitations_invitee ON room_invitations (invitee_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_room_sent ON messages (room_id, sent_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments (message_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_attachments_unsent ON attachments (created_at) WHERE message_id IS NULL`,
 	}
 	for _, m := range migrations {
 		if _, err := DB.Exec(m); err != nil {
