@@ -7,7 +7,6 @@ import (
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/handlers"
 	"github.com/devstr0ke/chat-mixer/middleware"
-	"github.com/devstr0ke/chat-mixer/workers"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -24,7 +23,6 @@ func main() {
 	db.Migrate()
 
 	handlers.WSHub = handlers.NewHub()
-	workers.StartExpirationWorker(db.DB, handlers.WSHub.CloseRoom, handlers.WSHub.NotifyRoomClosed)
 
 	r := gin.Default()
 
@@ -40,19 +38,29 @@ func main() {
 
 	protected := middleware.AuthRequired()
 
-	pool := r.Group("/pool", protected)
+	users := r.Group("/users", protected)
 	{
-		pool.POST("/join", handlers.JoinPool)
-		pool.POST("/leave", handlers.LeavePool)
+		users.GET("/search", handlers.SearchUsers)
 	}
 
 	rooms := r.Group("/rooms", protected)
 	{
+		rooms.POST("", handlers.CreateRoom)
 		rooms.GET("/me", handlers.GetMyRooms)
 		rooms.GET("/:room_id", handlers.GetRoom)
-		rooms.GET("/:room_id/messages", handlers.GetMessages)
-		rooms.PATCH("/:room_id/name", handlers.RenameRoom)
+		rooms.PATCH("/:room_id", handlers.UpdateRoom)
 		rooms.DELETE("/:room_id", handlers.DeleteRoom)
+		rooms.GET("/:room_id/messages", handlers.GetMessages)
+		rooms.GET("/:room_id/invitations", handlers.GetRoomInvitations)
+		rooms.POST("/:room_id/invitations", handlers.InviteToRoom)
+		rooms.DELETE("/:room_id/members/:user_id", handlers.RemoveMember)
+	}
+
+	invitations := r.Group("/invitations", protected)
+	{
+		invitations.GET("", handlers.GetMyInvitations)
+		invitations.POST("/:invitation_id/accept", handlers.AcceptInvitation)
+		invitations.DELETE("/:invitation_id", handlers.DeleteInvitation)
 	}
 
 	messages := r.Group("/messages", protected)

@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,11 +17,18 @@ import (
 // --- Protocol ---
 
 type WSMessage struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
-	ID      string `json:"id,omitempty"`
-	RoomID  string `json:"room_id,omitempty"`
-	Count   int    `json:"count,omitempty"`
+	Type         string     `json:"type"`
+	Content      string     `json:"content,omitempty"`
+	ID           string     `json:"id,omitempty"`
+	ClientID     string     `json:"client_id,omitempty"`
+	RoomID       string     `json:"room_id,omitempty"`
+	UserID       string     `json:"user_id,omitempty"`
+	Pseudo       string     `json:"pseudo,omitempty"`
+	SenderID     string     `json:"sender_id,omitempty"`
+	SenderPseudo string     `json:"sender_pseudo,omitempty"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
+	ReadAt       *time.Time `json:"read_at,omitempty"`
+	Count        int        `json:"count,omitempty"`
 }
 
 // --- Hub ---
@@ -67,31 +76,20 @@ func (h *Hub) Unregister(client *Client) {
 	}
 }
 
-func (h *Hub) Broadcast(roomID, senderID string, msg []byte) {
+// Broadcast sends msg to every connection in the room except the sending one.
+func (h *Hub) Broadcast(roomID string, except *Client, msg []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	for _, client := range h.rooms[roomID] {
-		if client.UserID == senderID {
-			continue
-		}
-		select {
-		case client.Send <- msg:
-		default:
+		if client != except {
+			client.send(msg)
 		}
 	}
 }
 
 func (h *Hub) BroadcastToAll(roomID string, msg []byte) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for _, client := range h.rooms[roomID] {
-		select {
-		case client.Send <- msg:
-		default:
-		}
-	}
+	h.Broadcast(roomID, nil, msg)
 }
 
 func (h *Hub) RegisterNotif(nc *NotifClient) {
@@ -128,6 +126,12 @@ func (h *Hub) NotifyUser(userID string, msg []byte) {
 	}
 }
 
+func (h *Hub) NotifyUsers(msg []byte, userIDs ...string) {
+	for _, uid := range userIDs {
+		h.NotifyUser(uid, msg)
+	}
+}
+
 func (h *Hub) IsUserInRoom(userID, roomID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -138,13 +142,6 @@ func (h *Hub) IsUserInRoom(userID, roomID string) bool {
 		}
 	}
 	return false
-}
-
-func (h *Hub) NotifyRoomClosed(roomID string, userIDs ...string) {
-	out, _ := json.Marshal(WSMessage{Type: "room_closed", RoomID: roomID})
-	for _, uid := range userIDs {
-		h.NotifyUser(uid, out)
-	}
 }
 
 func (h *Hub) BroadcastOnlineCount() {
@@ -162,6 +159,7 @@ func (h *Hub) BroadcastOnlineCount() {
 	h.mu.RUnlock()
 }
 
+// CloseRoom disconnects every connection to a room (the room was deleted).
 func (h *Hub) CloseRoom(roomID string) {
 	h.mu.Lock()
 	clients := h.rooms[roomID]
@@ -169,7 +167,30 @@ func (h *Hub) CloseRoom(roomID string) {
 	h.mu.Unlock()
 
 	for _, c := range clients {
-		close(c.Send)
+		c.close()
+	}
+}
+
+// DisconnectUser drops a user's connections to a room (they left or were removed).
+func (h *Hub) DisconnectUser(roomID, userID string) {
+	h.mu.Lock()
+	var kept, dropped []*Client
+	for _, c := range h.rooms[roomID] {
+		if c.UserID == userID {
+			dropped = append(dropped, c)
+		} else {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == 0 {
+		delete(h.rooms, roomID)
+	} else {
+		h.rooms[roomID] = kept
+	}
+	h.mu.Unlock()
+
+	for _, c := range dropped {
+		c.close()
 	}
 }
 
@@ -184,14 +205,34 @@ const (
 
 type Client struct {
 	UserID string
+	Pseudo string
 	RoomID string
 	Conn   *websocket.Conn
 	Send   chan []byte
+
+	// done is closed to make writePump send a close frame and exit.
+	// Send is never closed, so late writers can't panic.
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func (c *Client) close() {
+	c.closeOnce.Do(func() { close(c.done) })
+}
+
+// send queues msg without blocking; it's dropped if the buffer is full or the client is closed.
+func (c *Client) send(msg []byte) {
+	select {
+	case <-c.done:
+	case c.Send <- msg:
+	default:
+	}
 }
 
 func (c *Client) readPump() {
 	defer func() {
 		WSHub.Unregister(c)
+		c.close()
 		c.Conn.Close()
 	}()
 
@@ -228,7 +269,8 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) handleMessage(msg WSMessage) {
-	if msg.Content == "" {
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
 		return
 	}
 
@@ -238,57 +280,76 @@ func (c *Client) handleMessage(msg WSMessage) {
 		`INSERT INTO messages (room_id, sender_id, content)
 		 VALUES ($1, $2, $3)
 		 RETURNING id, sent_at`,
-		c.RoomID, c.UserID, msg.Content,
+		c.RoomID, c.UserID, content,
 	).Scan(&id, &sentAt)
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
+		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
 		return
 	}
 
-	out, _ := json.Marshal(WSMessage{Type: "message", ID: id, Content: msg.Content})
-	WSHub.Broadcast(c.RoomID, c.UserID, out)
-
-	ack, _ := json.Marshal(WSMessage{Type: "message_ack", ID: id})
-	select {
-	case c.Send <- ack:
-	default:
+	out := WSMessage{
+		Type:         "message",
+		ID:           id,
+		RoomID:       c.RoomID,
+		SenderID:     c.UserID,
+		SenderPseudo: c.Pseudo,
+		Content:      content,
+		SentAt:       &sentAt,
 	}
+	WSHub.Broadcast(c.RoomID, c, mustJSON(out))
+	c.send(mustJSON(WSMessage{Type: "message_ack", ID: id, ClientID: msg.ClientID, SentAt: &sentAt}))
 
-	var otherUserID string
-	_ = db.DB.QueryRow(
-		`SELECT CASE WHEN user_a_id = $1 THEN user_b_id ELSE user_a_id END
-		 FROM rooms WHERE id = $2`,
-		c.UserID, c.RoomID,
-	).Scan(&otherUserID)
+	// sending a message means the sender has caught up on the room
+	c.markRead(id)
 
-	if otherUserID != "" && !WSHub.IsUserInRoom(otherUserID, c.RoomID) {
-		notif, _ := json.Marshal(WSMessage{Type: "new_message", RoomID: c.RoomID, ID: c.UserID})
-		WSHub.NotifyUser(otherUserID, notif)
+	memberIDs, err := roomMemberIDs(db.DB, c.RoomID)
+	if err != nil {
+		log.Printf("ws: failed to list members: %v", err)
+		return
+	}
+	out.Type = "new_message"
+	notif := mustJSON(out)
+	for _, uid := range memberIDs {
+		if uid != c.UserID && !WSHub.IsUserInRoom(uid, c.RoomID) {
+			WSHub.NotifyUser(uid, notif)
+		}
 	}
 }
 
 func (c *Client) handleTyping() {
-	out, _ := json.Marshal(WSMessage{Type: "typing"})
-	WSHub.Broadcast(c.RoomID, c.UserID, out)
+	WSHub.Broadcast(c.RoomID, c, mustJSON(WSMessage{Type: "typing", UserID: c.UserID, Pseudo: c.Pseudo}))
 }
 
 func (c *Client) handleRead(msg WSMessage) {
-	if msg.ID == "" {
+	if !isUUID(msg.ID) {
 		return
 	}
+	c.markRead(msg.ID)
+}
 
-	_, err := db.DB.Exec(
-		`UPDATE messages SET is_read = true
-		 WHERE id = $1 AND room_id = $2 AND sender_id != $3 AND is_read = false`,
-		msg.ID, c.RoomID, c.UserID,
-	)
+// markRead advances the member's read marker to the given message (never
+// backwards) and tells the room so "seen by" indicators update.
+func (c *Client) markRead(messageID string) {
+	var readAt time.Time
+	err := db.DB.QueryRow(
+		`UPDATE room_members rm SET last_read_at = m.sent_at
+		 FROM messages m
+		 WHERE m.id = $3 AND m.room_id = $1
+		   AND rm.room_id = $1 AND rm.user_id = $2
+		   AND rm.last_read_at < m.sent_at
+		 RETURNING rm.last_read_at`,
+		c.RoomID, c.UserID, messageID,
+	).Scan(&readAt)
+	if err == sql.ErrNoRows {
+		return
+	}
 	if err != nil {
 		log.Printf("ws: failed to mark read: %v", err)
 		return
 	}
 
-	out, _ := json.Marshal(WSMessage{Type: "read", ID: msg.ID})
-	WSHub.Broadcast(c.RoomID, c.UserID, out)
+	WSHub.BroadcastToAll(c.RoomID, mustJSON(WSMessage{Type: "read", UserID: c.UserID, ReadAt: &readAt}))
 }
 
 func (c *Client) writePump() {
@@ -300,12 +361,13 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case msg, ok := <-c.Send:
+		case <-c.done:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
+			c.Conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			return
+		case msg := <-c.Send:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
@@ -328,25 +390,24 @@ var upgrader = websocket.Upgrader{
 
 func HandleWebSocket(c *gin.Context) {
 	userID := c.GetString("userID")
-	roomID := c.Param("room_id")
+	roomID, ok := uuidParam(c, "room_id", "room not found or access denied")
+	if !ok {
+		return
+	}
 
-	var isActive bool
-	var expiresAt time.Time
+	var pseudo string
 	err := db.DB.QueryRow(
-		`SELECT is_active, expires_at FROM rooms
-		 WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2)`,
+		`SELECT u.pseudo FROM room_members rm
+		 JOIN users u ON u.id = rm.user_id
+		 WHERE rm.room_id = $1 AND rm.user_id = $2`,
 		roomID, userID,
-	).Scan(&isActive, &expiresAt)
-	if err != nil {
+	).Scan(&pseudo)
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "room not found or access denied"})
 		return
 	}
-	if !isActive {
-		c.JSON(http.StatusGone, gin.H{"error": "room is no longer active"})
-		return
-	}
-	if time.Now().UTC().After(expiresAt) {
-		c.JSON(http.StatusGone, gin.H{"error": "room has expired"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch room"})
 		return
 	}
 
@@ -358,9 +419,11 @@ func HandleWebSocket(c *gin.Context) {
 
 	client := &Client{
 		UserID: userID,
+		Pseudo: pseudo,
 		RoomID: roomID,
 		Conn:   conn,
 		Send:   make(chan []byte, 256),
+		done:   make(chan struct{}),
 	}
 
 	WSHub.Register(client)

@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "chat-mixer",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "chat-mixer",
+      "Username": "chatmixer",
+      "SSLMode": "disable",
+      "PassFile": "/tmp/pgpass"
+    }
+  }
+}

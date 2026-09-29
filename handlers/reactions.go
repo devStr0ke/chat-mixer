@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
 
 	"github.com/devstr0ke/chat-mixer/db"
@@ -21,9 +20,33 @@ type reactionEvent struct {
 	Action    string `json:"action"` // "add" or "remove"
 }
 
+// messageRoomForMember returns the room of a message the user can see,
+// answering 404 when the message doesn't exist or isn't in one of their rooms.
+func messageRoomForMember(c *gin.Context) (messageID, roomID string, ok bool) {
+	messageID, ok = uuidParam(c, "message_id", "message not found")
+	if !ok {
+		return "", "", false
+	}
+
+	err := db.DB.QueryRow(
+		`SELECT m.room_id FROM messages m
+		 JOIN room_members rm ON rm.room_id = m.room_id AND rm.user_id = $2
+		 WHERE m.id = $1`,
+		messageID, c.GetString("userID"),
+	).Scan(&roomID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
+		return "", "", false
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify message"})
+		return "", "", false
+	}
+	return messageID, roomID, true
+}
+
 func ReactToMessage(c *gin.Context) {
 	userID := c.GetString("userID")
-	messageID := c.Param("message_id")
 
 	var req reactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -31,25 +54,13 @@ func ReactToMessage(c *gin.Context) {
 		return
 	}
 
-	// verify the message belongs to a room this user is in
-	var roomID string
-	err := db.DB.QueryRow(
-		`SELECT m.room_id FROM messages m
-		 JOIN rooms r ON r.id = m.room_id
-		 WHERE m.id = $1 AND (r.user_a_id = $2 OR r.user_b_id = $2)`,
-		messageID, userID,
-	).Scan(&roomID)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify message"})
+	messageID, roomID, ok := messageRoomForMember(c)
+	if !ok {
 		return
 	}
 
 	// upsert: one reaction per user per message — patch emoji if already exists
-	_, err = db.DB.Exec(
+	_, err := db.DB.Exec(
 		`INSERT INTO message_reactions (message_id, user_id, emoji)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = $3, created_at = NOW()`,
@@ -60,36 +71,23 @@ func ReactToMessage(c *gin.Context) {
 		return
 	}
 
-	out, _ := json.Marshal(reactionEvent{
+	// everyone in the room, including the reactor's other tabs
+	WSHub.BroadcastToAll(roomID, mustJSON(reactionEvent{
 		Type:      "reaction",
 		MessageID: messageID,
 		UserID:    userID,
 		Emoji:     req.Emoji,
 		Action:    "add",
-	})
-	WSHub.Broadcast(roomID, userID, out)
+	}))
 
 	c.JSON(http.StatusOK, gin.H{"message": "reaction saved"})
 }
 
 func RemoveReaction(c *gin.Context) {
 	userID := c.GetString("userID")
-	messageID := c.Param("message_id")
 
-	// verify the message belongs to a room this user is in
-	var roomID string
-	err := db.DB.QueryRow(
-		`SELECT m.room_id FROM messages m
-		 JOIN rooms r ON r.id = m.room_id
-		 WHERE m.id = $1 AND (r.user_a_id = $2 OR r.user_b_id = $2)`,
-		messageID, userID,
-	).Scan(&roomID)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify message"})
+	messageID, roomID, ok := messageRoomForMember(c)
+	if !ok {
 		return
 	}
 
@@ -108,13 +106,12 @@ func RemoveReaction(c *gin.Context) {
 		return
 	}
 
-	out, _ := json.Marshal(reactionEvent{
+	WSHub.BroadcastToAll(roomID, mustJSON(reactionEvent{
 		Type:      "reaction",
 		MessageID: messageID,
 		UserID:    userID,
 		Action:    "remove",
-	})
-	WSHub.Broadcast(roomID, userID, out)
+	}))
 
 	c.JSON(http.StatusOK, gin.H{"message": "reaction removed"})
 }
