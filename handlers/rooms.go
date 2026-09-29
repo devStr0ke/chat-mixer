@@ -272,7 +272,7 @@ func GetRoom(c *gin.Context) {
 	}
 
 	rows, err := db.DB.Query(
-		`SELECT u.id, u.pseudo, u.country, rm.joined_at, rm.last_read_at
+		`SELECT `+userSummaryColumns("u")+`, rm.joined_at, rm.last_read_at
 		 FROM room_members rm
 		 JOIN users u ON u.id = rm.user_id
 		 WHERE rm.room_id = $1
@@ -288,7 +288,7 @@ func GetRoom(c *gin.Context) {
 	resp.Members = make([]memberResponse, 0)
 	for rows.Next() {
 		var m memberResponse
-		if err := rows.Scan(&m.ID, &m.Pseudo, &m.Country, &m.JoinedAt, &m.LastReadAt); err != nil {
+		if err := rows.Scan(append(m.scanTargets(), &m.JoinedAt, &m.LastReadAt)...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan member"})
 			return
 		}

@@ -19,10 +19,10 @@ type invitationResponse struct {
 	CreatedAt time.Time   `json:"created_at"`
 }
 
-const invitationSelect = `
+var invitationSelect = `
 	SELECT i.id, i.room_id, r.name, i.created_at,
-	       inv.id, inv.pseudo, inv.country,
-	       ee.id, ee.pseudo, ee.country
+	       ` + userSummaryColumns("inv") + `,
+	       ` + userSummaryColumns("ee") + `
 	FROM room_invitations i
 	JOIN rooms r   ON r.id = i.room_id
 	JOIN users inv ON inv.id = i.inviter_id
@@ -39,9 +39,8 @@ func queryInvitations(where string, args ...any) ([]invitationResponse, error) {
 	invitations := make([]invitationResponse, 0)
 	for rows.Next() {
 		var i invitationResponse
-		if err := rows.Scan(&i.ID, &i.RoomID, &i.RoomName, &i.CreatedAt,
-			&i.Inviter.ID, &i.Inviter.Pseudo, &i.Inviter.Country,
-			&i.Invitee.ID, &i.Invitee.Pseudo, &i.Invitee.Country); err != nil {
+		targets := append([]any{&i.ID, &i.RoomID, &i.RoomName, &i.CreatedAt}, i.Inviter.scanTargets()...)
+		if err := rows.Scan(append(targets, i.Invitee.scanTargets()...)...); err != nil {
 			return nil, err
 		}
 		invitations = append(invitations, i)

@@ -22,9 +22,9 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	rows, err := db.DB.Query(
-		`SELECT id, pseudo, country FROM users
-		 WHERE pseudo ILIKE $1 AND id <> $2
-		 ORDER BY length(pseudo), pseudo
+		`SELECT `+userSummaryColumns("u")+` FROM users u
+		 WHERE u.pseudo ILIKE $1 AND u.id <> $2
+		 ORDER BY length(u.pseudo), u.pseudo
 		 LIMIT 10`,
 		likeEscaper.Replace(q)+"%", userID,
 	)
@@ -36,7 +36,7 @@ func SearchUsers(c *gin.Context) {
 
 	for rows.Next() {
 		var u userSummary
-		if err := rows.Scan(&u.ID, &u.Pseudo, &u.Country); err != nil {
+		if err := rows.Scan(u.scanTargets()...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan user"})
 			return
 		}

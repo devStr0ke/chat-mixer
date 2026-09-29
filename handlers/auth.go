@@ -16,6 +16,7 @@ type registerRequest struct {
 	Pseudo   string `json:"pseudo"   binding:"required,min=2,max=32"`
 	Email    string `json:"email"    binding:"required,email"`
 	Country  string `json:"country"  binding:"required,len=2"`
+	Country2 string `json:"country2" binding:"omitempty,len=2"`
 	Password string `json:"password" binding:"required,min=6"`
 }
 
@@ -37,6 +38,10 @@ func Register(c *gin.Context) {
 	}
 
 	req.Country = strings.ToUpper(req.Country)
+	req.Country2 = strings.ToUpper(req.Country2)
+	if req.Country2 == req.Country {
+		req.Country2 = ""
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -46,11 +51,11 @@ func Register(c *gin.Context) {
 
 	var user models.User
 	err = db.DB.QueryRow(
-		`INSERT INTO users (pseudo, email, country, password)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, pseudo, email, country, created_at`,
-		req.Pseudo, req.Email, req.Country, string(hash),
-	).Scan(&user.ID, &user.Pseudo, &user.Email, &user.Country, &user.CreatedAt)
+		`INSERT INTO users (pseudo, email, country, country2, password)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5)
+		 RETURNING id, pseudo, email, country, country2, avatar_id, created_at`,
+		req.Pseudo, req.Email, req.Country, req.Country2, string(hash),
+	).Scan(&user.ID, &user.Pseudo, &user.Email, &user.Country, &user.Country2, &user.AvatarID, &user.CreatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			c.JSON(http.StatusConflict, gin.H{"error": "pseudo or email already taken"})
@@ -78,10 +83,10 @@ func Login(c *gin.Context) {
 
 	var user models.User
 	err := db.DB.QueryRow(
-		`SELECT id, pseudo, email, country, password, created_at
+		`SELECT id, pseudo, email, country, country2, avatar_id, password, created_at
 		 FROM users WHERE email = $1 OR pseudo = $1`,
 		req.Identifier,
-	).Scan(&user.ID, &user.Pseudo, &user.Email, &user.Country, &user.Password, &user.CreatedAt)
+	).Scan(&user.ID, &user.Pseudo, &user.Email, &user.Country, &user.Country2, &user.AvatarID, &user.Password, &user.CreatedAt)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return

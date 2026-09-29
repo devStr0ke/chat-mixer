@@ -49,6 +49,10 @@ func main() {
 	users := r.Group("/users", protected)
 	{
 		users.GET("/search", handlers.SearchUsers)
+		users.GET("/me", handlers.GetMe)
+		users.PATCH("/me", handlers.UpdateMe)
+		users.PUT("/me/avatar", handlers.UploadAvatar)
+		users.DELETE("/me/avatar", handlers.DeleteAvatar)
 	}
 
 	rooms := r.Group("/rooms", protected)
@@ -79,6 +83,7 @@ func main() {
 	}
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
+	r.GET("/avatars/:avatar_id", middleware.AuthRequiredOrCookie(), handlers.GetAvatar)
 
 	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)

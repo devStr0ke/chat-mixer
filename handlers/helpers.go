@@ -12,9 +12,21 @@ import (
 
 // userSummary is the public view of a user embedded in other responses.
 type userSummary struct {
-	ID      string `json:"id"`
-	Pseudo  string `json:"pseudo"`
-	Country string `json:"country"`
+	ID       string  `json:"id"`
+	Pseudo   string  `json:"pseudo"`
+	Country  string  `json:"country"`
+	Country2 *string `json:"country2"`
+	AvatarID *string `json:"avatar_id"`
+}
+
+// userSummaryColumns selects a userSummary from the users table aliased as `alias`.
+func userSummaryColumns(alias string) string {
+	return alias + ".id, " + alias + ".pseudo, " + alias + ".country, " + alias + ".country2, " + alias + ".avatar_id"
+}
+
+// scanTargets matches the column order of userSummaryColumns.
+func (u *userSummary) scanTargets() []any {
+	return []any{&u.ID, &u.Pseudo, &u.Country, &u.Country2, &u.AvatarID}
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

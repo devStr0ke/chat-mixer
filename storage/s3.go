@@ -73,18 +73,25 @@ func Put(ctx context.Context, key, contentType string, data []byte) error {
 	return err
 }
 
+// ObjectInfo describes a stored object.
+type ObjectInfo struct {
+	Size        int64
+	ContentType string
+}
+
 // Get opens an object for streaming. The caller must close it.
-func Get(ctx context.Context, key string) (io.ReadCloser, error) {
+func Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {
 	obj, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, err
+		return nil, ObjectInfo{}, err
 	}
 	// GetObject is lazy; Stat surfaces a missing object before headers are written
-	if _, err := obj.Stat(); err != nil {
+	stat, err := obj.Stat()
+	if err != nil {
 		obj.Close()
-		return nil, err
+		return nil, ObjectInfo{}, err
 	}
-	return obj, nil
+	return obj, ObjectInfo{Size: stat.Size, ContentType: stat.ContentType}, nil
 }
 
 func Delete(ctx context.Context, key string) error {

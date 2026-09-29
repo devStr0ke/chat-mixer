@@ -58,51 +58,15 @@ func UploadAttachment(c *gin.Context) {
 		return
 	}
 
-	// leave room for the multipart envelope around the file
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAttachmentBytes+1<<20)
-	fh, err := c.FormFile("file")
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file is too large (max 10 MB)"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
-		return
-	}
-	if fh.Size > maxAttachmentBytes {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file is too large (max 10 MB)"})
-		return
-	}
-
-	f, err := fh.Open()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentBytes+1))
-	f.Close()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
-		return
-	}
-
-	// trust the bytes, not the client's filename or Content-Type
-	contentType := http.DetectContentType(data)
-	ext, allowed := allowedImageTypes[contentType]
-	if !allowed {
-		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "only JPEG, PNG, GIF and WebP images are supported"})
-		return
-	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "unreadable image"})
+	data, contentType, cfg, ok := readImageUpload(c, maxAttachmentBytes)
+	if !ok {
 		return
 	}
 	if cfg.Width*cfg.Height > maxAttachmentPixels {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "image dimensions are too large"})
 		return
 	}
+	ext := allowedImageTypes[contentType]
 
 	var id string
 	if err := db.DB.QueryRow(`SELECT uuid_generate_v4()`).Scan(&id); err != nil {
@@ -138,6 +102,62 @@ func UploadAttachment(c *gin.Context) {
 	})
 }
 
+// readImageUpload reads the multipart "file" field and checks it's a supported
+// image by its bytes (not the client's filename or Content-Type). It writes the
+// error response itself when ok is false.
+func readImageUpload(c *gin.Context, maxBytes int64) (data []byte, contentType string, cfg image.Config, ok bool) {
+	tooLarge := fmt.Sprintf("file is too large (max %d MB)", maxBytes>>20)
+
+	// leave room for the multipart envelope around the file
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes+1<<20)
+	fh, err := c.FormFile("file")
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": tooLarge})
+			return nil, "", cfg, false
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return nil, "", cfg, false
+	}
+	if fh.Size > maxBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": tooLarge})
+		return nil, "", cfg, false
+	}
+
+	f, err := fh.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
+		return nil, "", cfg, false
+	}
+	data, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
+	f.Close()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
+		return nil, "", cfg, false
+	}
+
+	contentType = http.DetectContentType(data)
+	if _, allowed := allowedImageTypes[contentType]; !allowed {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "only JPEG, PNG, GIF and WebP images are supported"})
+		return nil, "", cfg, false
+	}
+	cfg, _, err = image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "unreadable image"})
+		return nil, "", cfg, false
+	}
+	return data, contentType, cfg, true
+}
+
+// setImageHeaders marks a served image as immutable (its id never changes
+// content) and keeps browsers from sniffing or scripting it.
+func setImageHeaders(c *gin.Context) {
+	c.Header("Cache-Control", "private, max-age=31536000, immutable")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'")
+}
+
 // GetAttachment streams an image to room members (or to its uploader before
 // it's sent). Accepts the token cookie since <img> tags can't send headers.
 func GetAttachment(c *gin.Context) {
@@ -169,7 +189,7 @@ func GetAttachment(c *gin.Context) {
 		return
 	}
 
-	obj, err := storage.Get(c.Request.Context(), key)
+	obj, _, err := storage.Get(c.Request.Context(), key)
 	if err != nil {
 		log.Printf("storage: get %s failed: %v", key, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch attachment"})
@@ -177,10 +197,7 @@ func GetAttachment(c *gin.Context) {
 	}
 	defer obj.Close()
 
-	// an attachment id always maps to the same bytes
-	c.Header("Cache-Control", "private, max-age=31536000, immutable")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Content-Security-Policy", "default-src 'none'")
+	setImageHeaders(c)
 	c.DataFromReader(http.StatusOK, size, contentType, obj, nil)
 }
 

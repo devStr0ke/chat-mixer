@@ -7,6 +7,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 ## What it does
 
 - Users register and authenticate with JWT
+- Users have a profile picture and a country flag, plus an optional second country
 - Anyone can create a room and invite other users by pseudo
 - Invitees accept or decline; invitations arrive live over the notification WebSocket
 - Any member can invite; the owner can rename the room, remove members, or delete it
@@ -97,6 +98,7 @@ handlers/
   invitations.go      — room invitations
   reactions.go        — message reactions
   attachments.go      — image upload/download
+  profile.go          — profile, countries and avatars
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
 storage/s3.go         — S3 client for the attachments bucket
@@ -114,13 +116,20 @@ All protected routes require an `Authorization: Bearer <token>` header.
 ### Auth
 | Method | Route | Description |
 |---|---|---|
-| POST | `/auth/register` | Create account. Body: `pseudo`, `email`, `country` (2-letter), `password` |
+| POST | `/auth/register` | Create account. Body: `pseudo`, `email`, `country` (2-letter), optional `country2`, `password` |
 | POST | `/auth/login` | Login. Body: `identifier` (email or pseudo), `password` |
 
 ### Users
 | Method | Route | Description |
 |---|---|---|
 | GET | `/users/search?q=` | Up to 10 users whose pseudo starts with `q` (excludes you) |
+| GET | `/users/me` | Your profile |
+| PATCH | `/users/me` | Change your countries. Body: `country`, `country2` (`null` clears it) |
+| PUT | `/users/me/avatar` | Set your profile picture (multipart field `file`, max 2 MB, JPEG/PNG/GIF/WebP) |
+| DELETE | `/users/me/avatar` | Remove your profile picture |
+| GET | `/avatars/:avatar_id` | A profile picture, for any signed-in user (accepts the `token` cookie). Each upload gets a new id, so URLs are cached forever |
+
+Users everywhere in the API (members, search, invitations, auth) include `country2` and `avatar_id` (both nullable).
 
 ### Rooms
 | Method | Route | Who | Description |
