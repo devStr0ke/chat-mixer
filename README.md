@@ -212,7 +212,8 @@ Receive only:
 { "type": "new_message", "id": "uuid", "room_id": "uuid", "sender_id": "uuid", "sender_pseudo": "bob", "content": "hello", "sent_at": "…" }
 { "type": "invitation", "room_id": "uuid" }
 { "type": "room_removed", "room_id": "uuid" }
+{ "type": "room_read", "room_id": "uuid" }
 { "type": "online_count", "count": 3 }
 ```
 
-`new_message` goes to members who don't have the room open. `invitation` means your invitation list changed (new, cancelled, or the room was deleted). `room_removed` means you lost access (room deleted, removed, or you left).
+`new_message` goes to every member except the sender, whether or not they have the room open: a message is only read once a client sends `read`, which clients should do only while the conversation is actually on screen (tab visible, window focused, scrolled to the latest messages). `room_read` tells your other tabs and devices that you've read a room, so they can clear its unread badge. `invitation` means your invitation list changed (new, cancelled, or the room was deleted). `room_removed` means you lost access (room deleted, removed, or you left).

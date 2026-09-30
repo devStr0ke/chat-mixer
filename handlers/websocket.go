@@ -137,18 +137,6 @@ func (h *Hub) NotifyUsers(msg []byte, userIDs ...string) {
 	}
 }
 
-func (h *Hub) IsUserInRoom(userID, roomID string) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for _, client := range h.rooms[roomID] {
-		if client.UserID == userID {
-			return true
-		}
-	}
-	return false
-}
-
 func (h *Hub) BroadcastOnlineCount() {
 	h.mu.RLock()
 	count := len(h.notifs)
@@ -296,24 +284,28 @@ func (c *Client) handleMessage(msg WSMessage) {
 		SentAt:       &sentAt,
 		Attachments:  attachments,
 	}
-	WSHub.Broadcast(c.RoomID, c, mustJSON(out))
-	c.send(mustJSON(WSMessage{Type: "message_ack", ID: id, ClientID: msg.ClientID, SentAt: &sentAt}))
+	roomMsg := mustJSON(out)
 
-	// sending a message means the sender has caught up on the room
-	c.markRead(id)
-
+	// Everyone else gets an unread notification, even with the room open: having
+	// it open doesn't mean it's being looked at. It goes out before the room
+	// broadcast so a reader's room_read can never overtake it.
 	memberIDs, err := roomMemberIDs(db.DB, c.RoomID)
 	if err != nil {
 		log.Printf("ws: failed to list members: %v", err)
-		return
 	}
 	out.Type = "new_message"
 	notif := mustJSON(out)
 	for _, uid := range memberIDs {
-		if uid != c.UserID && !WSHub.IsUserInRoom(uid, c.RoomID) {
+		if uid != c.UserID {
 			WSHub.NotifyUser(uid, notif)
 		}
 	}
+
+	WSHub.Broadcast(c.RoomID, c, roomMsg)
+	c.send(mustJSON(WSMessage{Type: "message_ack", ID: id, ClientID: msg.ClientID, SentAt: &sentAt}))
+
+	// sending a message means the sender has caught up on the room
+	c.markRead(id)
 }
 
 var errInvalidAttachments = errors.New("invalid attachments")
@@ -415,6 +407,8 @@ func (c *Client) markRead(messageID string) {
 	}
 
 	WSHub.BroadcastToAll(c.RoomID, mustJSON(WSMessage{Type: "read", UserID: c.UserID, ReadAt: &readAt}))
+	// clears the unread badge on the reader's other tabs and devices
+	WSHub.NotifyUser(c.UserID, mustJSON(WSMessage{Type: "room_read", RoomID: c.RoomID}))
 }
 
 func (c *Client) writePump() {
