@@ -72,6 +72,9 @@ func main() {
 		rooms.DELETE("/:room_id/members/:user_id", handlers.RemoveMember)
 	}
 
+	r.GET("/link-preview", protected, handlers.GetLinkPreview)
+	r.GET("/link-previews/images/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetLinkPreviewImage)
+
 	gifs := r.Group("/gifs", protected)
 	{
 		gifs.GET("/search", handlers.SearchGifs)

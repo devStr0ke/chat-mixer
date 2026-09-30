@@ -17,6 +17,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Replies: a message can quote another message of the same room
 - Senders can edit their messages; every version is kept and visible to the room
+- Link previews: the server fetches a link's title, description and image (with SSRF protection) for a card under the message
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
@@ -107,11 +108,13 @@ handlers/
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
   replies.go          — quoted-message previews for replies
   edits.go            — message editing and edit history
+  linkpreviews.go     — link preview endpoint, cache and image copies
+linkpreview/          — SSRF-safe page fetcher and Open Graph parser (with tests)
   appearance.go       — room theme and background image
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
 storage/s3.go         — S3 client for the attachments bucket
-workers/attachments.go — hourly cleanup of uploads never sent
+workers/attachments.go — hourly cleanup of unsent uploads and stale link previews
 models/               — User, Room, RoomMember, RoomInvitation, Message
 docker-compose.yml    — postgres + pgAdmin + Garage + API
 ```
@@ -172,6 +175,18 @@ Uploads are private until a message references them; ones never sent are deleted
 | GET | `/messages/:message_id/edits` | Every version, oldest first: `{ versions: [{ content, at }] }` — the last one is the current text. Any room member |
 
 Messages carry `edited_at` (null until edited). Edits are announced with `message_edited` on both WebSockets.
+
+### Link previews
+| Method | Route | Description |
+|---|---|---|
+| GET | `/link-preview?url=` | Card data for a web page: `{ url, title, description, site_name, image_id, image_width, image_height }`, or `404` when it has no usable preview |
+| GET | `/link-previews/images/:image_id` | Our stored copy of the page's preview image (accepts the `token` cookie) |
+
+The server fetches pages itself, so viewers never contact the linked site. Because the URL comes from users, the fetcher (`linkpreview/`) only connects to public IP addresses on ports 80/443 — checked on the resolved address, for every redirect — and caps sizes and time. Results are cached in the database (7 days, 1 hour for failures), uncached lookups are limited to 20 per user per minute, and previews unused for 30 days are purged.
+
+```bash
+go test ./linkpreview/
+```
 
 ### GIFs
 | Method | Route | Description |

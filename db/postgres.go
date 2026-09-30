@@ -143,6 +143,21 @@ func Migrate() {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_edits_message ON message_edits (message_id, created_at)`,
+		// cache of link cards, keyed by the sha256 of the normalised URL
+		`CREATE TABLE IF NOT EXISTS link_previews (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			url_hash     CHAR(64) UNIQUE NOT NULL,
+			url          TEXT NOT NULL,
+			ok           BOOLEAN NOT NULL,
+			title        TEXT NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			site_name    TEXT NOT NULL DEFAULT '',
+			image_id     UUID,
+			image_width  INT NOT NULL DEFAULT 0,
+			image_height INT NOT NULL DEFAULT 0,
+			fetched_at   TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_link_previews_image ON link_previews (image_id)`,
 		`ALTER TABLE rooms
 			ADD COLUMN IF NOT EXISTS bg_color           VARCHAR(7),
 			ADD COLUMN IF NOT EXISTS bg_image_id        UUID,
