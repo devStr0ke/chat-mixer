@@ -20,6 +20,7 @@ type lastMessageResponse struct {
 	SenderPseudo    string    `json:"sender_pseudo"`
 	Content         string    `json:"content"`
 	AttachmentCount int       `json:"attachment_count"`
+	HasGif          bool      `json:"has_gif"`
 	SentAt          time.Time `json:"sent_at"`
 }
 
@@ -60,6 +61,7 @@ type messageResponse struct {
 	SentAt       time.Time            `json:"sent_at"`
 	Reactions    []reactionResponse   `json:"reactions"`
 	Attachments  []attachmentResponse `json:"attachments"`
+	Gif          *messageGif          `json:"gif"`
 }
 
 type messagePageResponse struct {
@@ -206,11 +208,12 @@ func GetMyRooms(c *gin.Context) {
 		        (SELECT COUNT(*) FROM messages m
 		         WHERE m.room_id = r.id AND m.sender_id <> $1 AND m.sent_at > rm.last_read_at),
 		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.sent_at,
-		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id)
+		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id),
+		        COALESCE(lm.has_gif, false)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
 		 LEFT JOIN LATERAL (
-		     SELECT id, sender_id, content, sent_at FROM messages
+		     SELECT id, sender_id, content, sent_at, gif_id IS NOT NULL AS has_gif FROM messages
 		     WHERE room_id = r.id
 		     ORDER BY sent_at DESC, id DESC
 		     LIMIT 1
@@ -233,9 +236,10 @@ func GetMyRooms(c *gin.Context) {
 			lmID, lmSender, lmPseudo, lmContent sql.NullString
 			lmSentAt                            sql.NullTime
 			lmAttachments                       int
+			lmHasGif                            bool
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt, &lmAttachments); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt, &lmAttachments, &lmHasGif); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
@@ -246,6 +250,7 @@ func GetMyRooms(c *gin.Context) {
 				SenderPseudo:    lmPseudo.String,
 				Content:         lmContent.String,
 				AttachmentCount: lmAttachments,
+				HasGif:          lmHasGif,
 				SentAt:          lmSentAt.Time,
 			}
 		}
@@ -327,7 +332,8 @@ func GetMessages(c *gin.Context) {
 
 	// fetch one extra row to know whether older messages remain
 	rows, err := db.DB.Query(
-		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.sent_at
+		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.sent_at,
+		        m.gif_id, m.gif_url, m.gif_width, m.gif_height
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
 		 WHERE m.room_id = $1
@@ -346,10 +352,14 @@ func GetMessages(c *gin.Context) {
 	messages := make([]messageResponse, 0, limit+1)
 	for rows.Next() {
 		var m messageResponse
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &m.SentAt); err != nil {
+		var gifID, gifURL sql.NullString
+		var gifWidth, gifHeight sql.NullInt64
+		if err := rows.Scan(&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &m.SentAt,
+			&gifID, &gifURL, &gifWidth, &gifHeight); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
 		}
+		m.Gif = scanGif(gifID, gifURL, gifWidth, gifHeight)
 		m.Reactions = make([]reactionResponse, 0)
 		m.Attachments = make([]attachmentResponse, 0)
 		messages = append(messages, m)

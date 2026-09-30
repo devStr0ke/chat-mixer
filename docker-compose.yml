@@ -89,6 +89,7 @@ services:
       S3_BUCKET: ${S3_BUCKET}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
+      GIPHY_API_KEY: ${GIPHY_API_KEY:-}
     ports:
       - "${API_PORT:-8090}:8080"
     depends_on:

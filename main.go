@@ -69,6 +69,12 @@ func main() {
 		rooms.DELETE("/:room_id/members/:user_id", handlers.RemoveMember)
 	}
 
+	gifs := r.Group("/gifs", protected)
+	{
+		gifs.GET("/search", handlers.SearchGifs)
+		gifs.GET("/trending", handlers.TrendingGifs)
+	}
+
 	invitations := r.Group("/invitations", protected)
 	{
 		invitations.GET("", handlers.GetMyInvitations)

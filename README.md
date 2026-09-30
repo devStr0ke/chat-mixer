@@ -14,6 +14,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Members can leave; if the owner leaves, ownership passes to the longest-standing member, and a room with no members left is deleted
 - Chat happens over WebSocket with typing indicators, per-member read receipts ("seen by") and emoji reactions
 - Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
+- A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
 
@@ -48,6 +49,7 @@ Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_SECRET`, `GARAGE_RPC_SECRE
 | `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Garage creates them on first start; the API uses them | `chat-mixer` / — / — |
 | `S3_ENDPOINT` | `go run .` only (the dockerized API uses `http://garage:3900`). Empty disables uploads | — |
 | `S3_REGION` | API | `garage` |
+| `GIPHY_API_KEY` | API — [GIPHY](https://developers.giphy.com) key for the GIF picker. Empty disables it | — |
 | `DB_URL` | `go run .` only | — |
 | `JWT_SECRET` | API | — |
 | `PORT` | `go run .` only | `8080` |
@@ -99,6 +101,7 @@ handlers/
   reactions.go        — message reactions
   attachments.go      — image upload/download
   profile.go          — profile, countries and avatars
+  gifs.go             — GIPHY search proxy (cached) and GIF lookup
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
 storage/s3.go         — S3 client for the attachments bucket
@@ -152,6 +155,14 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 
 Uploads are private until a message references them; ones never sent are deleted after 24 hours. Deleting a room deletes its files.
 
+### GIFs
+| Method | Route | Description |
+|---|---|---|
+| GET | `/gifs/search?q=&offset=` | Search GIPHY. Returns `{ gifs: [{ id, title, url, width, height, preview_url, preview_width, preview_height }], next_offset }` |
+| GET | `/gifs/trending?offset=` | Trending GIFs, same shape |
+
+Results are cached (10 min for searches, 15 min for trending) because starter GIPHY keys allow 100 calls per hour. GIFs are hotlinked from GIPHY's CDN, not stored. To send one, a client passes its `gif_id` over the WebSocket and the server resolves the URL itself, so clients can't inject arbitrary image URLs.
+
 ### Invitations
 | Method | Route | Description |
 |---|---|---|
@@ -183,11 +194,12 @@ Send:
 ```json
 { "type": "message", "content": "hello", "client_id": "local-1" }
 { "type": "message", "content": "", "client_id": "local-2", "attachment_ids": ["uuid", "uuid"] }
+{ "type": "message", "content": "", "client_id": "local-3", "gif_id": "giphy-id" }
 { "type": "typing" }
 { "type": "read", "id": "message-uuid" }
 ```
 
-`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
+`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `gif_id` is a GIF id from `/gifs/*`; the delivered message then carries `"gif": { "id", "url", "width", "height" }`. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
 
 Receive:
 ```json

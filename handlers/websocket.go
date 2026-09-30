@@ -33,6 +33,8 @@ type WSMessage struct {
 	Count        int        `json:"count,omitempty"`
 
 	AttachmentIDs []string             `json:"attachment_ids,omitempty"` // client → server
+	GifID         string               `json:"gif_id,omitempty"`         // client → server
+	Gif           *messageGif          `json:"gif,omitempty"`            // server → client
 	Attachments   []attachmentResponse `json:"attachments,omitempty"`    // server → client
 }
 
@@ -263,11 +265,22 @@ func (c *Client) readPump() {
 
 func (c *Client) handleMessage(msg WSMessage) {
 	content := strings.TrimSpace(msg.Content)
-	if content == "" && len(msg.AttachmentIDs) == 0 {
+	if content == "" && len(msg.AttachmentIDs) == 0 && msg.GifID == "" {
 		return
 	}
 
-	id, sentAt, attachments, err := c.saveMessage(content, msg.AttachmentIDs)
+	var gif *messageGif
+	if msg.GifID != "" {
+		resolved, err := resolveGif(msg.GifID)
+		if err != nil {
+			log.Printf("ws: failed to resolve gif: %v", err)
+			c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
+			return
+		}
+		gif = &resolved
+	}
+
+	id, sentAt, attachments, err := c.saveMessage(content, msg.AttachmentIDs, gif)
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
 		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
@@ -283,6 +296,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		Content:      content,
 		SentAt:       &sentAt,
 		Attachments:  attachments,
+		Gif:          gif,
 	}
 	roomMsg := mustJSON(out)
 
@@ -310,9 +324,9 @@ func (c *Client) handleMessage(msg WSMessage) {
 
 var errInvalidAttachments = errors.New("invalid attachments")
 
-// saveMessage stores a message and claims the sender's uploaded attachments
-// for it, all or nothing.
-func (c *Client) saveMessage(content string, attachmentIDs []string) (id string, sentAt time.Time, attachments []attachmentResponse, err error) {
+// saveMessage stores a message (with its GIF, if any) and claims the sender's
+// uploaded attachments for it, all or nothing.
+func (c *Client) saveMessage(content string, attachmentIDs []string, gif *messageGif) (id string, sentAt time.Time, attachments []attachmentResponse, err error) {
 	if len(attachmentIDs) > maxAttachmentsPerMsg {
 		return "", time.Time{}, nil, errInvalidAttachments
 	}
@@ -330,11 +344,20 @@ func (c *Client) saveMessage(content string, attachmentIDs []string) (id string,
 	}
 	defer tx.Rollback()
 
+	var gifID, gifURL sql.NullString
+	var gifWidth, gifHeight sql.NullInt64
+	if gif != nil {
+		gifID = sql.NullString{String: gif.ID, Valid: true}
+		gifURL = sql.NullString{String: gif.URL, Valid: true}
+		gifWidth = sql.NullInt64{Int64: int64(gif.Width), Valid: true}
+		gifHeight = sql.NullInt64{Int64: int64(gif.Height), Valid: true}
+	}
+
 	if err = tx.QueryRow(
-		`INSERT INTO messages (room_id, sender_id, content)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO messages (room_id, sender_id, content, gif_id, gif_url, gif_width, gif_height)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, sent_at`,
-		c.RoomID, c.UserID, content,
+		c.RoomID, c.UserID, content, gifID, gifURL, gifWidth, gifHeight,
 	).Scan(&id, &sentAt); err != nil {
 		return "", time.Time{}, nil, err
 	}

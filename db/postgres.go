@@ -127,6 +127,11 @@ func Migrate() {
 		upgradeLegacyRooms,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS country2 VARCHAR(2)`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_id UUID`,
+		`ALTER TABLE messages
+			ADD COLUMN IF NOT EXISTS gif_id     VARCHAR(64),
+			ADD COLUMN IF NOT EXISTS gif_url    TEXT,
+			ADD COLUMN IF NOT EXISTS gif_width  INT,
+			ADD COLUMN IF NOT EXISTS gif_height INT`,
 		// read state now lives in room_members.last_read_at
 		`ALTER TABLE messages DROP COLUMN IF EXISTS is_read`,
 		`CREATE INDEX IF NOT EXISTS idx_room_members_user ON room_members (user_id)`,
