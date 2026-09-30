@@ -16,7 +16,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Replies: a message can quote another message of the same room
-- Per-room appearance (background color or image, bubble colors), set by the owner and shown to everyone
+- Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
 
@@ -146,9 +146,9 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 | GET | `/rooms/:room_id` | member | Room details, `theme` and members (with `last_read_at`) |
 | PATCH | `/rooms/:room_id` | owner | Rename. Body: `name` |
 | DELETE | `/rooms/:room_id` | owner | Delete the room and its history for everyone |
-| PATCH | `/rooms/:room_id/theme` | owner | Set the room's colors. Body: `background_color`, `bubble_own_color`, `bubble_other_color` (`#rrggbb`, or `null` for the default) |
-| PUT | `/rooms/:room_id/background` | owner | Set the background image (multipart field `file`, max 10 MB) |
-| DELETE | `/rooms/:room_id/background` | owner | Remove the background image |
+| PATCH | `/rooms/:room_id/theme` | member | Set the room's colors. Body: `background_color`, `bubble_own_color`, `bubble_other_color` (`#rrggbb`, or `null` for the default) |
+| PUT | `/rooms/:room_id/background` | member | Set the background image (multipart field `file`, max 10 MB) |
+| DELETE | `/rooms/:room_id/background` | member | Remove the background image |
 | GET | `/rooms/:room_id/background/:image_id` | member | The current background image (accepts the `token` cookie, so CSS can load it) |
 | GET | `/rooms/:room_id/messages` | member | Latest 50 messages, oldest first: `{ messages, has_more }`. Page back with `?before=<message_id>`; `?limit=` up to 100 |
 | GET | `/rooms/:room_id/invitations` | member | Pending invitations for the room |

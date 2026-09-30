@@ -40,19 +40,6 @@ func loadRoomTheme(roomID string) (roomTheme, error) {
 	return t, err
 }
 
-// requireOwner is requireMember plus a 403 for non-owners.
-func requireOwner(c *gin.Context, action string) (roomID string, ok bool) {
-	roomID, isOwner, ok := requireMember(c)
-	if !ok {
-		return "", false
-	}
-	if !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can " + action})
-		return "", false
-	}
-	return roomID, true
-}
-
 // themeChanged tells open clients to refetch the room and answers with the new theme.
 func themeChanged(c *gin.Context, roomID string) {
 	WSHub.BroadcastToAll(roomID, mustJSON(WSMessage{Type: "room_updated", RoomID: roomID}))
@@ -83,9 +70,9 @@ func normalizeColor(v *string) (sql.NullString, bool) {
 	return sql.NullString{String: color, Valid: true}, true
 }
 
-// UpdateRoomTheme sets the room's colors. Owner only.
+// UpdateRoomTheme sets the room's colors. Any member can.
 func UpdateRoomTheme(c *gin.Context) {
-	roomID, ok := requireOwner(c, "change the room's appearance")
+	roomID, _, ok := requireMember(c)
 	if !ok {
 		return
 	}
@@ -113,9 +100,9 @@ func UpdateRoomTheme(c *gin.Context) {
 	themeChanged(c, roomID)
 }
 
-// UploadRoomBackground replaces the room's background image. Owner only.
+// UploadRoomBackground replaces the room's background image. Any member can.
 func UploadRoomBackground(c *gin.Context) {
-	roomID, ok := requireOwner(c, "change the room's appearance")
+	roomID, _, ok := requireMember(c)
 	if !ok {
 		return
 	}
@@ -156,9 +143,9 @@ func UploadRoomBackground(c *gin.Context) {
 	themeChanged(c, roomID)
 }
 
-// DeleteRoomBackground removes the background image. Owner only.
+// DeleteRoomBackground removes the background image. Any member can.
 func DeleteRoomBackground(c *gin.Context) {
-	roomID, ok := requireOwner(c, "change the room's appearance")
+	roomID, _, ok := requireMember(c)
 	if !ok {
 		return
 	}
