@@ -35,6 +35,8 @@ type WSMessage struct {
 	AttachmentIDs []string             `json:"attachment_ids,omitempty"` // client → server
 	GifID         string               `json:"gif_id,omitempty"`         // client → server
 	Gif           *messageGif          `json:"gif,omitempty"`            // server → client
+	ReplyToID     string               `json:"reply_to_id,omitempty"`    // client → server
+	ReplyTo       *replyPreview        `json:"reply_to,omitempty"`       // server → client
 	Attachments   []attachmentResponse `json:"attachments,omitempty"`    // server → client
 }
 
@@ -280,7 +282,29 @@ func (c *Client) handleMessage(msg WSMessage) {
 		gif = &resolved
 	}
 
-	id, sentAt, attachments, err := c.saveMessage(content, msg.AttachmentIDs, gif)
+	var replyTo *replyPreview
+	if msg.ReplyToID != "" {
+		var err error
+		if isUUID(msg.ReplyToID) {
+			replyTo, err = loadReplyPreview(c.RoomID, msg.ReplyToID)
+		} else {
+			err = sql.ErrNoRows
+		}
+		if err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("ws: failed to load replied message: %v", err)
+			}
+			c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
+			return
+		}
+	}
+
+	id, sentAt, attachments, err := c.saveMessage(newMessage{
+		Content:       content,
+		AttachmentIDs: msg.AttachmentIDs,
+		Gif:           gif,
+		ReplyToID:     msg.ReplyToID,
+	})
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
 		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
@@ -297,6 +321,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		SentAt:       &sentAt,
 		Attachments:  attachments,
 		Gif:          gif,
+		ReplyTo:      replyTo,
 	}
 	roomMsg := mustJSON(out)
 
@@ -324,9 +349,20 @@ func (c *Client) handleMessage(msg WSMessage) {
 
 var errInvalidAttachments = errors.New("invalid attachments")
 
-// saveMessage stores a message (with its GIF, if any) and claims the sender's
-// uploaded attachments for it, all or nothing.
-func (c *Client) saveMessage(content string, attachmentIDs []string, gif *messageGif) (id string, sentAt time.Time, attachments []attachmentResponse, err error) {
+// newMessage is what a client sends, once validated.
+type newMessage struct {
+	Content       string
+	AttachmentIDs []string
+	Gif           *messageGif
+	ReplyToID     string // already checked to be a message of this room
+}
+
+// saveMessage stores a message (with its GIF and reply target, if any) and
+// claims the sender's uploaded attachments for it, all or nothing.
+func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachments []attachmentResponse, err error) {
+	content, attachmentIDs, gif := m.Content, m.AttachmentIDs, m.Gif
+	replyToID := sql.NullString{String: m.ReplyToID, Valid: m.ReplyToID != ""}
+
 	if len(attachmentIDs) > maxAttachmentsPerMsg {
 		return "", time.Time{}, nil, errInvalidAttachments
 	}
@@ -354,10 +390,10 @@ func (c *Client) saveMessage(content string, attachmentIDs []string, gif *messag
 	}
 
 	if err = tx.QueryRow(
-		`INSERT INTO messages (room_id, sender_id, content, gif_id, gif_url, gif_width, gif_height)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO messages (room_id, sender_id, content, gif_id, gif_url, gif_width, gif_height, reply_to_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id, sent_at`,
-		c.RoomID, c.UserID, content, gifID, gifURL, gifWidth, gifHeight,
+		c.RoomID, c.UserID, content, gifID, gifURL, gifWidth, gifHeight, replyToID,
 	).Scan(&id, &sentAt); err != nil {
 		return "", time.Time{}, nil, err
 	}

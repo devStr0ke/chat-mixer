@@ -45,6 +45,7 @@ type roomDetailResponse struct {
 	Name      string           `json:"name"`
 	OwnerID   string           `json:"owner_id"`
 	CreatedAt time.Time        `json:"created_at"`
+	Theme     roomTheme        `json:"theme"`
 	Members   []memberResponse `json:"members"`
 }
 
@@ -62,6 +63,7 @@ type messageResponse struct {
 	Reactions    []reactionResponse   `json:"reactions"`
 	Attachments  []attachmentResponse `json:"attachments"`
 	Gif          *messageGif          `json:"gif"`
+	ReplyTo      *replyPreview        `json:"reply_to"`
 }
 
 type messagePageResponse struct {
@@ -268,9 +270,9 @@ func GetRoom(c *gin.Context) {
 
 	var resp roomDetailResponse
 	err := db.DB.QueryRow(
-		`SELECT id, name, owner_id, created_at FROM rooms WHERE id = $1`,
+		`SELECT id, name, owner_id, created_at, `+roomThemeColumns+` FROM rooms WHERE id = $1`,
 		roomID,
-	).Scan(&resp.ID, &resp.Name, &resp.OwnerID, &resp.CreatedAt)
+	).Scan(append([]any{&resp.ID, &resp.Name, &resp.OwnerID, &resp.CreatedAt}, resp.Theme.scanTargets()...)...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch room"})
 		return
@@ -333,9 +335,12 @@ func GetMessages(c *gin.Context) {
 	// fetch one extra row to know whether older messages remain
 	rows, err := db.DB.Query(
 		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.sent_at,
-		        m.gif_id, m.gif_url, m.gif_width, m.gif_height
+		        m.gif_id, m.gif_url, m.gif_width, m.gif_height,
+		        `+replyPreviewColumns+`
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
+		 LEFT JOIN messages rm ON rm.id = m.reply_to_id
+		 LEFT JOIN users ru ON ru.id = rm.sender_id
 		 WHERE m.room_id = $1
 		   AND ($2::uuid IS NULL OR (m.sent_at, m.id) <
 		        (SELECT sent_at, id FROM messages WHERE id = $2::uuid AND room_id = $1))
@@ -354,12 +359,15 @@ func GetMessages(c *gin.Context) {
 		var m messageResponse
 		var gifID, gifURL sql.NullString
 		var gifWidth, gifHeight sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &m.SentAt,
-			&gifID, &gifURL, &gifWidth, &gifHeight); err != nil {
+		var reply nullableReply
+		targets := append([]any{&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &m.SentAt,
+			&gifID, &gifURL, &gifWidth, &gifHeight}, reply.targets()...)
+		if err := rows.Scan(targets...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
 		}
 		m.Gif = scanGif(gifID, gifURL, gifWidth, gifHeight)
+		m.ReplyTo = reply.preview()
 		m.Reactions = make([]reactionResponse, 0)
 		m.Attachments = make([]attachmentResponse, 0)
 		messages = append(messages, m)

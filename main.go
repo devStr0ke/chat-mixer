@@ -62,6 +62,9 @@ func main() {
 		rooms.GET("/:room_id", handlers.GetRoom)
 		rooms.PATCH("/:room_id", handlers.UpdateRoom)
 		rooms.DELETE("/:room_id", handlers.DeleteRoom)
+		rooms.PATCH("/:room_id/theme", handlers.UpdateRoomTheme)
+		rooms.PUT("/:room_id/background", handlers.UploadRoomBackground)
+		rooms.DELETE("/:room_id/background", handlers.DeleteRoomBackground)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
 		rooms.POST("/:room_id/attachments", handlers.UploadAttachment)
 		rooms.GET("/:room_id/invitations", handlers.GetRoomInvitations)
@@ -90,6 +93,7 @@ func main() {
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
 	r.GET("/avatars/:avatar_id", middleware.AuthRequiredOrCookie(), handlers.GetAvatar)
+	r.GET("/rooms/:room_id/background/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetRoomBackground)
 
 	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
 	r.GET("/ws/:room_id", protected, handlers.HandleWebSocket)

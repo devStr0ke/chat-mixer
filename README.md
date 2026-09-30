@@ -15,6 +15,8 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Chat happens over WebSocket with typing indicators, per-member read receipts ("seen by") and emoji reactions
 - Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
+- Replies: a message can quote another message of the same room
+- Per-room appearance (background color or image, bubble colors), set by the owner and shown to everyone
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
 
@@ -102,6 +104,8 @@ handlers/
   attachments.go      — image upload/download
   profile.go          — profile, countries and avatars
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
+  replies.go          — quoted-message previews for replies
+  appearance.go       — room theme and background image
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
 storage/s3.go         — S3 client for the attachments bucket
@@ -139,9 +143,13 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 |---|---|---|---|
 | POST | `/rooms` | anyone | Create a room. Body: `name`, optional `pseudos` to invite |
 | GET | `/rooms/me` | — | Your rooms with `member_count`, `unread_count` and `last_message`, most recent first |
-| GET | `/rooms/:room_id` | member | Room details and members (with `last_read_at`) |
+| GET | `/rooms/:room_id` | member | Room details, `theme` and members (with `last_read_at`) |
 | PATCH | `/rooms/:room_id` | owner | Rename. Body: `name` |
 | DELETE | `/rooms/:room_id` | owner | Delete the room and its history for everyone |
+| PATCH | `/rooms/:room_id/theme` | owner | Set the room's colors. Body: `background_color`, `bubble_own_color`, `bubble_other_color` (`#rrggbb`, or `null` for the default) |
+| PUT | `/rooms/:room_id/background` | owner | Set the background image (multipart field `file`, max 10 MB) |
+| DELETE | `/rooms/:room_id/background` | owner | Remove the background image |
+| GET | `/rooms/:room_id/background/:image_id` | member | The current background image (accepts the `token` cookie, so CSS can load it) |
 | GET | `/rooms/:room_id/messages` | member | Latest 50 messages, oldest first: `{ messages, has_more }`. Page back with `?before=<message_id>`; `?limit=` up to 100 |
 | GET | `/rooms/:room_id/invitations` | member | Pending invitations for the room |
 | POST | `/rooms/:room_id/invitations` | member | Invite a user. Body: `pseudo` |
@@ -195,11 +203,12 @@ Send:
 { "type": "message", "content": "hello", "client_id": "local-1" }
 { "type": "message", "content": "", "client_id": "local-2", "attachment_ids": ["uuid", "uuid"] }
 { "type": "message", "content": "", "client_id": "local-3", "gif_id": "giphy-id" }
+{ "type": "message", "content": "agreed", "client_id": "local-4", "reply_to_id": "message-uuid" }
 { "type": "typing" }
 { "type": "read", "id": "message-uuid" }
 ```
 
-`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `gif_id` is a GIF id from `/gifs/*`; the delivered message then carries `"gif": { "id", "url", "width", "height" }`. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
+`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `gif_id` is a GIF id from `/gifs/*`; the delivered message then carries `"gif": { "id", "url", "width", "height" }`. `reply_to_id` must be a message of the same room; the delivered message (and history) then carries `"reply_to": { "id", "sender_id", "sender_pseudo", "content", "attachment_count", "has_gif" }`, with `content` cut to 140 characters. Theme changes are announced with `room_updated`. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
 
 Receive:
 ```json

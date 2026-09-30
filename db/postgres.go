@@ -132,6 +132,12 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS gif_url    TEXT,
 			ADD COLUMN IF NOT EXISTS gif_width  INT,
 			ADD COLUMN IF NOT EXISTS gif_height INT`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL`,
+		`ALTER TABLE rooms
+			ADD COLUMN IF NOT EXISTS bg_color           VARCHAR(7),
+			ADD COLUMN IF NOT EXISTS bg_image_id        UUID,
+			ADD COLUMN IF NOT EXISTS bubble_own_color   VARCHAR(7),
+			ADD COLUMN IF NOT EXISTS bubble_other_color VARCHAR(7)`,
 		// read state now lives in room_members.last_read_at
 		`ALTER TABLE messages DROP COLUMN IF EXISTS is_read`,
 		`CREATE INDEX IF NOT EXISTS idx_room_members_user ON room_members (user_id)`,
