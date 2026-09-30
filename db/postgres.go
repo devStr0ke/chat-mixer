@@ -133,6 +133,16 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS gif_width  INT,
 			ADD COLUMN IF NOT EXISTS gif_height INT`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP`,
+		// previous versions of edited messages; written_at is when that version was typed
+		`CREATE TABLE IF NOT EXISTS message_edits (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			content    TEXT NOT NULL,
+			written_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_message_edits_message ON message_edits (message_id, created_at)`,
 		`ALTER TABLE rooms
 			ADD COLUMN IF NOT EXISTS bg_color           VARCHAR(7),
 			ADD COLUMN IF NOT EXISTS bg_image_id        UUID,

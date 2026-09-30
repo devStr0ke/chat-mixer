@@ -16,6 +16,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Replies: a message can quote another message of the same room
+- Senders can edit their messages; every version is kept and visible to the room
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
@@ -105,6 +106,7 @@ handlers/
   profile.go          — profile, countries and avatars
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
   replies.go          — quoted-message previews for replies
+  edits.go            — message editing and edit history
   appearance.go       — room theme and background image
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
@@ -163,6 +165,14 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 
 Uploads are private until a message references them; ones never sent are deleted after 24 hours. Deleting a room deletes its files.
 
+### Editing
+| Method | Route | Description |
+|---|---|---|
+| PATCH | `/messages/:message_id` | Edit the text of your own message. Body: `content` (may be empty only if the message has an image or GIF). Returns `{ id, content, edited_at }` |
+| GET | `/messages/:message_id/edits` | Every version, oldest first: `{ versions: [{ content, at }] }` — the last one is the current text. Any room member |
+
+Messages carry `edited_at` (null until edited). Edits are announced with `message_edited` on both WebSockets.
+
 ### GIFs
 | Method | Route | Description |
 |---|---|---|
@@ -213,6 +223,7 @@ Send:
 Receive:
 ```json
 { "type": "message", "id": "uuid", "room_id": "uuid", "sender_id": "uuid", "sender_pseudo": "bob", "content": "hello", "sent_at": "…", "attachments": [{ "id": "uuid", "content_type": "image/webp", "width": 2048, "height": 1365, "size": 23810 }] }
+{ "type": "message_edited", "id": "uuid", "room_id": "uuid", "content": "new text", "edited_at": "…" }
 { "type": "message_ack", "id": "uuid", "client_id": "local-1", "sent_at": "…" }
 { "type": "message_error", "client_id": "local-1" }
 { "type": "typing", "user_id": "uuid", "pseudo": "bob" }

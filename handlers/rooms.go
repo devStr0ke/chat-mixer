@@ -64,6 +64,7 @@ type messageResponse struct {
 	Attachments  []attachmentResponse `json:"attachments"`
 	Gif          *messageGif          `json:"gif"`
 	ReplyTo      *replyPreview        `json:"reply_to"`
+	EditedAt     *time.Time           `json:"edited_at"`
 }
 
 type messagePageResponse struct {
@@ -335,7 +336,7 @@ func GetMessages(c *gin.Context) {
 	// fetch one extra row to know whether older messages remain
 	rows, err := db.DB.Query(
 		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.sent_at,
-		        m.gif_id, m.gif_url, m.gif_width, m.gif_height,
+		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.edited_at,
 		        `+replyPreviewColumns+`
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
@@ -361,7 +362,7 @@ func GetMessages(c *gin.Context) {
 		var gifWidth, gifHeight sql.NullInt64
 		var reply nullableReply
 		targets := append([]any{&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &m.SentAt,
-			&gifID, &gifURL, &gifWidth, &gifHeight}, reply.targets()...)
+			&gifID, &gifURL, &gifWidth, &gifHeight, &m.EditedAt}, reply.targets()...)
 		if err := rows.Scan(targets...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
