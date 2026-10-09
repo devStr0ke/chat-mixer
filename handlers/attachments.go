@@ -43,10 +43,12 @@ type attachmentResponse struct {
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 	Size        int64  `json:"size"`
+	DurationMs  int    `json:"duration_ms,omitempty"` // videos
+	HasPoster   bool   `json:"has_poster,omitempty"`  // videos with a poster frame
 }
 
-// UploadAttachment stores an image in the bucket. It stays private to the
-// uploader until a message references it.
+// UploadAttachment stores an image or video in the bucket. It stays private
+// to the uploader until a message references it.
 func UploadAttachment(c *gin.Context) {
 	userID := c.GetString("userID")
 	roomID, _, ok := requireMember(c)
@@ -54,16 +56,56 @@ func UploadAttachment(c *gin.Context) {
 		return
 	}
 	if !storage.Enabled() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image uploads are not available"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "uploads are not available"})
 		return
 	}
 
-	data, contentType, cfg, ok := readImageUpload(c, maxAttachmentBytes)
-	if !ok {
+	// room for the largest file type (videos) plus the poster and form fields
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxVideoBytes+maxPosterBytes+1<<20)
+	fh, err := c.FormFile("file")
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file is too large (max %d MB)", maxVideoBytes>>20)})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
 	}
-	if cfg.Width*cfg.Height > maxAttachmentPixels {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "image dimensions are too large"})
+	f, err := fh.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
+		return
+	}
+	defer f.Close()
+
+	// what the file is comes from its bytes, never from its name or declared type
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	if videoType := sniffVideo(head[:n]); videoType != "" {
+		storeVideoAttachment(c, userID, roomID, fh, f, videoType)
+		return
+	}
+
+	if fh.Size > maxAttachmentBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("images are limited to %d MB", maxAttachmentBytes>>20)})
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentBytes+1))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read file"})
+		return
+	}
+	contentType, cfg, status, msg := checkImage(data)
+	if status == http.StatusUnsupportedMediaType && msg == unsupportedImageMsg {
+		msg = "only images (JPEG, PNG, GIF, WebP) and videos (MP4, MOV, WebM) are supported"
+	}
+	if status != 0 {
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 	ext := allowedImageTypes[contentType]
@@ -102,6 +144,25 @@ func UploadAttachment(c *gin.Context) {
 	})
 }
 
+const unsupportedImageMsg = "only JPEG, PNG, GIF and WebP images are supported"
+
+// checkImage validates image bytes by content. status is 0 when they're fine;
+// otherwise status and msg describe the error response.
+func checkImage(data []byte) (contentType string, cfg image.Config, status int, msg string) {
+	contentType = http.DetectContentType(data)
+	if _, allowed := allowedImageTypes[contentType]; !allowed {
+		return "", cfg, http.StatusUnsupportedMediaType, unsupportedImageMsg
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return "", cfg, http.StatusUnsupportedMediaType, "unreadable image"
+	}
+	if cfg.Width*cfg.Height > maxAttachmentPixels {
+		return "", cfg, http.StatusRequestEntityTooLarge, "image dimensions are too large"
+	}
+	return contentType, cfg, 0, ""
+}
+
 // readImageUpload reads the multipart "file" field and checks it's a supported
 // image by its bytes (not the client's filename or Content-Type). It writes the
 // error response itself when ok is false.
@@ -137,14 +198,9 @@ func readImageUpload(c *gin.Context, maxBytes int64) (data []byte, contentType s
 		return nil, "", cfg, false
 	}
 
-	contentType = http.DetectContentType(data)
-	if _, allowed := allowedImageTypes[contentType]; !allowed {
-		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "only JPEG, PNG, GIF and WebP images are supported"})
-		return nil, "", cfg, false
-	}
-	cfg, _, err = image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "unreadable image"})
+	contentType, cfg, status, msg := checkImage(data)
+	if status != 0 {
+		c.JSON(status, gin.H{"error": msg})
 		return nil, "", cfg, false
 	}
 	return data, contentType, cfg, true
@@ -172,14 +228,13 @@ func GetAttachment(c *gin.Context) {
 	}
 
 	var key, contentType string
-	var size int64
 	err := db.DB.QueryRow(
-		`SELECT a.object_key, a.content_type, a.size_bytes
+		`SELECT a.object_key, a.content_type
 		 FROM attachments a
 		 JOIN room_members rm ON rm.room_id = a.room_id AND rm.user_id = $2
 		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)`,
 		id, userID,
-	).Scan(&key, &contentType, &size)
+	).Scan(&key, &contentType)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
 		return
@@ -198,7 +253,9 @@ func GetAttachment(c *gin.Context) {
 	defer obj.Close()
 
 	setImageHeaders(c)
-	c.DataFromReader(http.StatusOK, size, contentType, obj, nil)
+	c.Header("Content-Type", servedVideoType(contentType))
+	// handles Range requests: videos stream and seek instead of downloading whole
+	http.ServeContent(c.Writer, c.Request, "", time.Time{}, obj)
 }
 
 // attachmentsByMessage loads the attachments of the given messages, in the order they were sent.
@@ -209,7 +266,8 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 	}
 
 	rows, err := db.DB.Query(
-		`SELECT message_id, id, content_type, width, height, size_bytes
+		`SELECT message_id, id, content_type, width, height, size_bytes,
+		        COALESCE(duration_ms, 0), poster_key IS NOT NULL
 		 FROM attachments
 		 WHERE message_id = ANY($1::uuid[])
 		 ORDER BY position ASC, id ASC`,
@@ -223,7 +281,7 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 	for rows.Next() {
 		var messageID string
 		var a attachmentResponse
-		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size); err != nil {
+		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster); err != nil {
 			return nil, err
 		}
 		result[messageID] = append(result[messageID], a)

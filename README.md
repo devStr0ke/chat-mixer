@@ -13,7 +13,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Any member can invite; the owner can rename the room, remove members, or delete it
 - Members can leave; if the owner leaves, ownership passes to the longest-standing member, and a room with no members left is deleted
 - Chat happens over WebSocket with typing indicators, per-member read receipts ("seen by") and emoji reactions
-- Members can send images and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
+- Members can send photos, videos and GIFs; files live in an S3-compatible bucket (Garage) and are only served to room members
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Replies: a message can quote another message of the same room
 - Senders can edit their messages; every version is kept and visible to the room
@@ -54,6 +54,7 @@ Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_SECRET`, `GARAGE_RPC_SECRE
 | `S3_ENDPOINT` | `go run .` only (the dockerized API uses `http://garage:3900`). Empty disables uploads | — |
 | `S3_REGION` | API | `garage` |
 | `GIPHY_API_KEY` | API — [GIPHY](https://developers.giphy.com) key for the GIF picker. Empty disables it | — |
+| `CORS_ORIGINS` | API — web app origins (comma-separated) allowed to upload straight to the API; see [Attachments](#attachments) | `http://localhost:3000,http://localhost:3001` in Compose |
 | `DB_URL` | `go run .` only | — |
 | `JWT_SECRET` | API | — |
 | `PORT` | `go run .` only | `8080` |
@@ -103,7 +104,8 @@ handlers/
   rooms.go            — rooms, members, message history
   invitations.go      — room invitations
   reactions.go        — message reactions
-  attachments.go      — image upload/download
+  attachments.go      — photo/video upload and download (with Range)
+  videos.go           — video type detection, streamed storage, poster frames
   profile.go          — profile, countries and avatars
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
   replies.go          — quoted-message previews for replies
@@ -163,10 +165,15 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 ### Attachments
 | Method | Route | Description |
 |---|---|---|
-| POST | `/rooms/:room_id/attachments` | Upload an image (multipart field `file`, max 10 MB). JPEG, PNG, GIF or WebP, checked from the file content. Returns `{ id, content_type, width, height, size }` |
-| GET | `/attachments/:attachment_id` | The image, for room members once it's been sent (and for its uploader before). Also accepts the `token` cookie so `<img>` tags work |
+| POST | `/rooms/:room_id/attachments` | Upload a photo or video (multipart field `file`). Photos: JPEG, PNG, GIF or WebP, max 10 MB. Videos: MP4, MOV or WebM, max 100 MB, with optional fields `poster` (a JPEG/PNG/WebP frame, max 2 MB, which also gives the video's `width`/`height`) and `duration_ms`. Types are checked from the file content. Returns `{ id, content_type, width, height, size }`, plus `duration_ms` and `has_poster` for videos |
+| GET | `/attachments/:attachment_id` | The file, for room members once it's been sent (and for its uploader before). Supports `Range` requests, so videos stream and seek. Also accepts the `token` cookie so `<img>`/`<video>` tags work |
+| GET | `/attachments/:attachment_id/poster` | A video's poster frame (same access rules) |
 
 Uploads are private until a message references them; ones never sent are deleted after 24 hours. Deleting a room deletes its files.
+
+Videos are stored as uploaded, not re-encoded: they're streamed to the bucket (never held in memory) and play in the browser's own player. MOV files are served as `video/mp4`, which every browser accepts for the H.264 that iPhones export; an HEVC video plays only where the browser and device can decode HEVC.
+
+The web app uploads straight to the API rather than through its `/api` rewrite, because Next.js caps proxied request bodies at 10 MB. That route alone answers CORS preflights, for the origins in `CORS_ORIGINS`; it authenticates with the `Authorization` header only, never cookies.
 
 ### Editing
 | Method | Route | Description |
@@ -233,7 +240,7 @@ Send:
 { "type": "read", "id": "message-uuid" }
 ```
 
-`attachment_ids` (up to 10) must be your own unsent uploads in this room; images are shown in that order. `gif_id` is a GIF id from `/gifs/*`; the delivered message then carries `"gif": { "id", "url", "width", "height" }`. `reply_to_id` must be a message of the same room; the delivered message (and history) then carries `"reply_to": { "id", "sender_id", "sender_pseudo", "content", "attachment_count", "has_gif" }`, with `content` cut to 140 characters. Theme changes are announced with `room_updated`. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
+`attachment_ids` (up to 10) must be your own unsent uploads in this room; photos and videos are shown in that order. `gif_id` is a GIF id from `/gifs/*`; the delivered message then carries `"gif": { "id", "url", "width", "height" }`. `reply_to_id` must be a message of the same room; the delivered message (and history) then carries `"reply_to": { "id", "sender_id", "sender_pseudo", "content", "attachment_count", "video_count", "has_gif" }`, with `content` cut to 140 characters (`video_count` says how many of the attachments are videos, as in `last_message` from `/rooms/me`). Theme changes are announced with `room_updated`. `read` moves your read marker up to that message. Sending a message marks the room read up to it.
 
 Receive:
 ```json

@@ -71,7 +71,7 @@ func deleteUnsentAttachments(database *sql.DB) {
 	rows, err := database.Query(
 		`DELETE FROM attachments
 		 WHERE message_id IS NULL AND created_at < NOW() - INTERVAL '24 hours'
-		 RETURNING object_key`,
+		 RETURNING object_key, poster_key`,
 	)
 	if err != nil {
 		log.Printf("worker: attachment cleanup query failed: %v", err)
@@ -79,10 +79,16 @@ func deleteUnsentAttachments(database *sql.DB) {
 	}
 
 	var keys []string
+	removed := 0
 	for rows.Next() {
 		var key string
-		if err := rows.Scan(&key); err == nil {
+		var posterKey sql.NullString
+		if err := rows.Scan(&key, &posterKey); err == nil {
+			removed++
 			keys = append(keys, key)
+			if posterKey.Valid {
+				keys = append(keys, posterKey.String)
+			}
 		}
 	}
 	rows.Close()
@@ -94,7 +100,7 @@ func deleteUnsentAttachments(database *sql.DB) {
 			log.Printf("worker: failed to delete object %s: %v", key, err)
 		}
 	}
-	if len(keys) > 0 {
-		log.Printf("worker: removed %d unsent attachments", len(keys))
+	if removed > 0 {
+		log.Printf("worker: removed %d unsent attachments", removed)
 	}
 }

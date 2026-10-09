@@ -20,6 +20,7 @@ type lastMessageResponse struct {
 	SenderPseudo    string    `json:"sender_pseudo"`
 	Content         string    `json:"content"`
 	AttachmentCount int       `json:"attachment_count"`
+	VideoCount      int       `json:"video_count"`
 	HasGif          bool      `json:"has_gif"`
 	SentAt          time.Time `json:"sent_at"`
 }
@@ -212,6 +213,7 @@ func GetMyRooms(c *gin.Context) {
 		         WHERE m.room_id = r.id AND m.sender_id <> $1 AND m.sent_at > rm.last_read_at),
 		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.sent_at,
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id),
+		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id AND a.content_type LIKE 'video/%'),
 		        COALESCE(lm.has_gif, false)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
@@ -238,11 +240,11 @@ func GetMyRooms(c *gin.Context) {
 			r                                   roomSummaryResponse
 			lmID, lmSender, lmPseudo, lmContent sql.NullString
 			lmSentAt                            sql.NullTime
-			lmAttachments                       int
+			lmAttachments, lmVideos             int
 			lmHasGif                            bool
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt, &lmAttachments, &lmHasGif); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
@@ -253,6 +255,7 @@ func GetMyRooms(c *gin.Context) {
 				SenderPseudo:    lmPseudo.String,
 				Content:         lmContent.String,
 				AttachmentCount: lmAttachments,
+				VideoCount:      lmVideos,
 				HasGif:          lmHasGif,
 				SentAt:          lmSentAt.Time,
 			}

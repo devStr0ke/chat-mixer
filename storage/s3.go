@@ -79,8 +79,17 @@ type ObjectInfo struct {
 	ContentType string
 }
 
-// Get opens an object for streaming. The caller must close it.
-func Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {
+// PutStream uploads size bytes from r without holding them in memory: large
+// objects go up as a multipart upload, and when r is an io.ReaderAt (such as
+// a multipart.File) each part is read straight from it, with no part buffers.
+func PutStream(ctx context.Context, key, contentType string, r io.Reader, size int64) error {
+	_, err := client.PutObject(ctx, bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType})
+	return err
+}
+
+// Get opens an object for reading. It's seekable, so it can answer HTTP Range
+// requests (needed to play and scrub videos). The caller must close it.
+func Get(ctx context.Context, key string) (io.ReadSeekCloser, ObjectInfo, error) {
 	obj, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, ObjectInfo{}, err

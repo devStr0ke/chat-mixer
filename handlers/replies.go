@@ -16,23 +16,25 @@ type replyPreview struct {
 	SenderPseudo    string `json:"sender_pseudo"`
 	Content         string `json:"content"`
 	AttachmentCount int    `json:"attachment_count"`
+	VideoCount      int    `json:"video_count"`
 	HasGif          bool   `json:"has_gif"`
 }
 
 // replyPreviewColumns selects a replyPreview from `messages rm` joined to its
 // sender `users ru`; both may be NULL when the message isn't a reply.
 const replyPreviewColumns = `rm.id, rm.sender_id, ru.pseudo, LEFT(rm.content, 140), rm.gif_id IS NOT NULL,
-	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id)`
+	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id),
+	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id AND ra.content_type LIKE 'video/%')`
 
 // nullableReply holds the scan targets for replyPreviewColumns.
 type nullableReply struct {
 	id, senderID, pseudo, content sql.NullString
 	hasGif                        sql.NullBool
-	attachments                   int
+	attachments, videos           int
 }
 
 func (r *nullableReply) targets() []any {
-	return []any{&r.id, &r.senderID, &r.pseudo, &r.content, &r.hasGif, &r.attachments}
+	return []any{&r.id, &r.senderID, &r.pseudo, &r.content, &r.hasGif, &r.attachments, &r.videos}
 }
 
 func (r *nullableReply) preview() *replyPreview {
@@ -45,6 +47,7 @@ func (r *nullableReply) preview() *replyPreview {
 		SenderPseudo:    r.pseudo.String,
 		Content:         r.content.String,
 		AttachmentCount: r.attachments,
+		VideoCount:      r.videos,
 		HasGif:          r.hasGif.Bool,
 	}
 }

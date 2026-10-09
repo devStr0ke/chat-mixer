@@ -133,6 +133,9 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS gif_width  INT,
 			ADD COLUMN IF NOT EXISTS gif_height INT`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL`,
+		`ALTER TABLE attachments
+			ADD COLUMN IF NOT EXISTS duration_ms INT,
+			ADD COLUMN IF NOT EXISTS poster_key  TEXT`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP`,
 		// previous versions of edited messages; written_at is when that version was typed
 		`CREATE TABLE IF NOT EXISTS message_edits (

@@ -66,11 +66,15 @@ func main() {
 		rooms.PUT("/:room_id/background", handlers.UploadRoomBackground)
 		rooms.DELETE("/:room_id/background", handlers.DeleteRoomBackground)
 		rooms.GET("/:room_id/messages", handlers.GetMessages)
-		rooms.POST("/:room_id/attachments", handlers.UploadAttachment)
 		rooms.GET("/:room_id/invitations", handlers.GetRoomInvitations)
 		rooms.POST("/:room_id/invitations", handlers.InviteToRoom)
 		rooms.DELETE("/:room_id/members/:user_id", handlers.RemoveMember)
 	}
+
+	// the web app uploads photos and videos straight here (not via its /api proxy)
+	uploadCORS := middleware.UploadCORS(os.Getenv("CORS_ORIGINS"))
+	r.OPTIONS("/rooms/:room_id/attachments", uploadCORS)
+	r.POST("/rooms/:room_id/attachments", uploadCORS, protected, handlers.UploadAttachment)
 
 	r.GET("/link-preview", protected, handlers.GetLinkPreview)
 	r.GET("/link-previews/images/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetLinkPreviewImage)
@@ -97,6 +101,7 @@ func main() {
 	}
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
+	r.GET("/attachments/:attachment_id/poster", middleware.AuthRequiredOrCookie(), handlers.GetAttachmentPoster)
 	r.GET("/avatars/:avatar_id", middleware.AuthRequiredOrCookie(), handlers.GetAvatar)
 	r.GET("/rooms/:room_id/background/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetRoomBackground)
 

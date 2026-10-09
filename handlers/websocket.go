@@ -402,7 +402,7 @@ func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachm
 		rows, err := tx.Query(
 			`UPDATE attachments SET message_id = $1, position = array_position($2::uuid[], id)
 			 WHERE id = ANY($2::uuid[]) AND room_id = $3 AND uploader_id = $4 AND message_id IS NULL
-			 RETURNING id, content_type, width, height, size_bytes`,
+			 RETURNING id, content_type, width, height, size_bytes, COALESCE(duration_ms, 0), poster_key IS NOT NULL`,
 			id, pq.Array(attachmentIDs), c.RoomID, c.UserID,
 		)
 		if err != nil {
@@ -411,7 +411,7 @@ func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachm
 		byID := make(map[string]attachmentResponse, len(attachmentIDs))
 		for rows.Next() {
 			var a attachmentResponse
-			if err := rows.Scan(&a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size); err != nil {
+			if err := rows.Scan(&a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster); err != nil {
 				rows.Close()
 				return "", time.Time{}, nil, err
 			}
