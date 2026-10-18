@@ -167,6 +167,10 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS bubble_own_color   VARCHAR(7),
 			ADD COLUMN IF NOT EXISTS bubble_other_color VARCHAR(7)`,
 		// read state now lives in room_members.last_read_at
+		// id of the encryption key that sealed the text (NULL: written before encryption)
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS key_id VARCHAR(16)`,
+		`ALTER TABLE message_edits ADD COLUMN IF NOT EXISTS key_id VARCHAR(16)`,
+		`ALTER TABLE link_previews ADD COLUMN IF NOT EXISTS key_id VARCHAR(16)`,
 		`ALTER TABLE messages DROP COLUMN IF EXISTS is_read`,
 		`CREATE INDEX IF NOT EXISTS idx_room_members_user ON room_members (user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_room_invitations_invitee ON room_invitations (invitee_id)`,

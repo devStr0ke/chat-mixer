@@ -12,6 +12,7 @@ import (
 
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/lib/pq"
 )
@@ -389,12 +390,15 @@ func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachm
 		gifHeight = sql.NullInt64{Int64: int64(gif.Height), Valid: true}
 	}
 
+	// the id is picked here because the encryption is bound to it
+	id = uuid.NewString()
+	sealed, keyID := sealMessage(c.RoomID, id, content)
 	if err = tx.QueryRow(
-		`INSERT INTO messages (room_id, sender_id, content, gif_id, gif_url, gif_width, gif_height, reply_to_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, sent_at`,
-		c.RoomID, c.UserID, content, gifID, gifURL, gifWidth, gifHeight, replyToID,
-	).Scan(&id, &sentAt); err != nil {
+		`INSERT INTO messages (id, room_id, sender_id, content, key_id, gif_id, gif_url, gif_width, gif_height, reply_to_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 RETURNING sent_at`,
+		id, c.RoomID, c.UserID, sealed, keyID, gifID, gifURL, gifWidth, gifHeight, replyToID,
+	).Scan(&sentAt); err != nil {
 		return "", time.Time{}, nil, err
 	}
 

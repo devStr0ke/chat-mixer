@@ -3,9 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"image"
 	"log"
 	"net/http"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/devstr0ke/chat-mixer/db"
+	"github.com/devstr0ke/chat-mixer/encryption"
 	"github.com/devstr0ke/chat-mixer/linkpreview"
 	"github.com/devstr0ke/chat-mixer/storage"
 	"github.com/gin-gonic/gin"
@@ -87,8 +86,7 @@ func GetLinkPreview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
-	sum := sha256.Sum256([]byte(pageURL))
-	hash := hex.EncodeToString(sum[:])
+	hash := encryption.LinkPreviewKey(pageURL)
 
 	if respondWithCachedPreview(c, hash) {
 		return
@@ -142,17 +140,26 @@ func respondWithCachedPreview(c *gin.Context, hash string) bool {
 	var (
 		p          linkPreviewResponse
 		ok         bool
+		keyID      sql.NullString
 		ageSeconds float64
 	)
 	// age is computed by the database so both timestamps share one clock
 	err := db.DB.QueryRow(
-		`SELECT url, ok, title, description, site_name, image_id, image_width, image_height,
+		`SELECT url, ok, title, description, site_name, key_id, image_id, image_width, image_height,
 		        EXTRACT(EPOCH FROM (NOW() - fetched_at))
 		 FROM link_previews WHERE url_hash = $1`,
 		hash,
-	).Scan(&p.URL, &ok, &p.Title, &p.Description, &p.SiteName, &p.ImageID, &p.ImageWidth, &p.ImageHeight, &ageSeconds)
+	).Scan(&p.URL, &ok, &p.Title, &p.Description, &p.SiteName, &keyID, &p.ImageID, &p.ImageWidth, &p.ImageHeight, &ageSeconds)
 	if err != nil {
 		return false
+	}
+	// an entry that won't decrypt is treated as a miss and fetched again
+	for _, field := range []*string{&p.URL, &p.Title, &p.Description, &p.SiteName} {
+		text, err := encryption.Open(*field, keyID.String, encryption.LinkPreviewAAD(hash))
+		if err != nil {
+			return false
+		}
+		*field = text
 	}
 
 	ttl := linkPreviewTTL
@@ -227,17 +234,22 @@ func copyPreviewImage(ctx context.Context, imageURL string) (imageID string, wid
 // storeLinkPreview caches a result (good or not) and drops the image it replaces.
 func storeLinkPreview(hash string, p linkPreviewResponse, ok bool) error {
 	var previousImage sql.NullString
+	aad := encryption.LinkPreviewAAD(hash)
+	pageURL, keyID := encryption.Seal(p.URL, aad)
+	title, _ := encryption.Seal(p.Title, aad)
+	description, _ := encryption.Seal(p.Description, aad)
+	siteName, _ := encryption.Seal(p.SiteName, aad)
 	err := db.DB.QueryRow(
 		`WITH old AS (SELECT image_id FROM link_previews WHERE url_hash = $1)
-		 INSERT INTO link_previews (url_hash, url, ok, title, description, site_name, image_id, image_width, image_height, fetched_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		 INSERT INTO link_previews (url_hash, url, ok, title, description, site_name, key_id, image_id, image_width, image_height, fetched_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 		 ON CONFLICT (url_hash) DO UPDATE SET
-		     ok = EXCLUDED.ok, title = EXCLUDED.title, description = EXCLUDED.description,
-		     site_name = EXCLUDED.site_name, image_id = EXCLUDED.image_id,
+		     url = EXCLUDED.url, ok = EXCLUDED.ok, title = EXCLUDED.title, description = EXCLUDED.description,
+		     site_name = EXCLUDED.site_name, key_id = EXCLUDED.key_id, image_id = EXCLUDED.image_id,
 		     image_width = EXCLUDED.image_width, image_height = EXCLUDED.image_height,
 		     fetched_at = EXCLUDED.fetched_at
 		 RETURNING (SELECT image_id FROM old)`,
-		hash, p.URL, ok, p.Title, p.Description, p.SiteName, p.ImageID, p.ImageWidth, p.ImageHeight,
+		hash, pageURL, ok, title, description, siteName, keyID, p.ImageID, p.ImageWidth, p.ImageHeight,
 	).Scan(&previousImage)
 	if err != nil {
 		return err

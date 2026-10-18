@@ -21,6 +21,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
+- Encryption at rest: message text, edit history, cached link previews and every stored file are encrypted, so a leaked database or bucket can't be read on its own (see [Encryption](#encryption))
 
 ---
 
@@ -54,6 +55,8 @@ Fill in `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_SECRET`, `GARAGE_RPC_SECRE
 | `S3_ENDPOINT` | `go run .` only (the dockerized API uses `http://garage:3900`). Empty disables uploads | — |
 | `S3_REGION` | API | `garage` |
 | `GIPHY_API_KEY` | API — [GIPHY](https://developers.giphy.com) key for the GIF picker. Empty disables it | — |
+| `ENCRYPTION_KEY` | API — 32 random bytes in hex (`openssl rand -hex 32`) that everything stored is encrypted with. **Required**; keep a copy in a password manager, since losing it makes messages and files unreadable | — |
+| `ENCRYPTION_OLD_KEYS` | API — previous keys (comma-separated) while rotating; see [Encryption](#encryption) | — |
 | `CORS_ORIGINS` | API — web app origins (comma-separated) allowed to upload straight to the API; see [Attachments](#attachments) | `http://localhost:3000,http://localhost:3001` in Compose |
 | `DB_URL` | `go run .` only | — |
 | `JWT_SECRET` | API | — |
@@ -98,6 +101,8 @@ curl http://localhost:8090/health
 main.go               — server bootstrap and route registration
 db/postgres.go        — DB connection and migrations
 middleware/auth.go    — JWT generation and auth middleware
+middleware/cors.go    — CORS for direct uploads from the web app
+encryption/           — key derivation, AES-256-GCM sealing, keyed hashes (with tests)
 handlers/
   auth.go             — POST /auth/register, POST /auth/login
   users.go            — GET /users/search
@@ -115,11 +120,34 @@ linkpreview/          — SSRF-safe page fetcher and Open Graph parser (with tes
   appearance.go       — room theme and background image
   websocket.go        — per-room WS + global notification WS + hub
   helpers.go          — membership checks and shared helpers
-storage/s3.go         — S3 client for the attachments bucket
+  content.go          — sealing and opening message text
+storage/s3.go         — S3 client for the attachments bucket (SSE-C encrypted)
 workers/attachments.go — hourly cleanup of unsent uploads and stale link previews
+workers/encryption.go — startup sweep: encrypts older rows and files, re-encrypts after a key change
 models/               — User, Room, RoomMember, RoomInvitation, Message
 docker-compose.yml    — postgres + pgAdmin + Garage + API
 ```
+
+---
+
+## Encryption
+
+Everything users write is encrypted before it's stored, with keys derived from `ENCRYPTION_KEY`. That key lives only in the API's configuration, so a copy of the database (a dump, a backup, a leaked password) or of Garage's volume is unreadable on its own. It doesn't protect against someone who controls the API server itself, since the API holds the key; only end-to-end encryption would.
+
+| What | How |
+|---|---|
+| Message text and every earlier version of edited messages | AES-256-GCM, bound to the message's room and id: a ciphertext copied onto another message or into another room won't decrypt |
+| Link-preview cache (URL, title, description, site) | AES-256-GCM; looked up by a keyed hash (HMAC-SHA256), so the cache can't be checked for a guessed URL |
+| Photos, videos, posters, avatars, backgrounds, preview images | SSE-C: the API hands Garage the key with each request; Garage encrypts what it stores and never keeps the key. Range reads still work |
+| Request logs | query strings (shared URLs, GIF searches) are left out |
+
+Still readable in the database: accounts (pseudo, email, countries; passwords are bcrypt hashes), room names and themes, who is in which room, when messages were sent, reactions, and file sizes and types.
+
+Each encrypted row stores the id of the key that sealed it (`key_id`). On startup the API encrypts anything stored before encryption was enabled, then compacts those tables (`VACUUM FULL`) so the old plaintext row versions leave the live database files; files are re-encrypted in place by Garage in the background, and both sweeps run once more five minutes later to catch writes from the previous version during a rolling deploy. **Backups taken before encryption was enabled still contain plaintext: delete them.**
+
+**Rotating the key:** generate a new key, set it as `ENCRYPTION_KEY` and move the old one to `ENCRYPTION_OLD_KEYS`, then restart. The sweep re-encrypts every row and file with the new key (cached link previews are dropped and fetched again). Once the logs show the file sweep has finished, remove the old key and restart.
+
+The API refuses to start without `ENCRYPTION_KEY`, so nothing is ever stored unencrypted by mistake.
 
 ---
 

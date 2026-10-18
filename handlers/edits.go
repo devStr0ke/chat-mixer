@@ -55,13 +55,14 @@ func EditMessage(c *gin.Context) {
 
 	var (
 		roomID, senderID, current string
+		currentKeyID              sql.NullString
 		editedAt                  *time.Time
 		hasMedia                  bool
 		edits                     int
 	)
 	// the row lock keeps concurrent edits of the same message in order
 	err = tx.QueryRow(
-		`SELECT m.room_id, m.sender_id, m.content, m.edited_at,
+		`SELECT m.room_id, m.sender_id, m.content, m.key_id, m.edited_at,
 		        m.gif_id IS NOT NULL OR EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id),
 		        (SELECT COUNT(*) FROM message_edits e WHERE e.message_id = m.id)
 		 FROM messages m
@@ -69,7 +70,7 @@ func EditMessage(c *gin.Context) {
 		 WHERE m.id = $1
 		 FOR UPDATE OF m`,
 		messageID, userID,
-	).Scan(&roomID, &senderID, &current, &editedAt, &hasMedia, &edits)
+	).Scan(&roomID, &senderID, &current, &currentKeyID, &editedAt, &hasMedia, &edits)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
 		return
@@ -82,6 +83,7 @@ func EditMessage(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own messages"})
 		return
 	}
+	current = openMessage(roomID, messageID, current, currentKeyID)
 	// text can only be emptied when an image or GIF remains
 	if content == "" && !hasMedia {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "message can't be empty"})
@@ -97,17 +99,19 @@ func EditMessage(c *gin.Context) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO message_edits (message_id, content, written_at)
-		 SELECT id, content, COALESCE(edited_at, sent_at) FROM messages WHERE id = $1`,
+		// the ciphertext is copied as is: versions share the message's binding
+		`INSERT INTO message_edits (message_id, content, key_id, written_at)
+		 SELECT id, content, key_id, COALESCE(edited_at, sent_at) FROM messages WHERE id = $1`,
 		messageID,
 	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to edit message"})
 		return
 	}
 	var newEditedAt time.Time
+	sealed, keyID := sealMessage(roomID, messageID, content)
 	if err := tx.QueryRow(
-		`UPDATE messages SET content = $1, edited_at = NOW() WHERE id = $2 RETURNING edited_at`,
-		content, messageID,
+		`UPDATE messages SET content = $1, key_id = $2, edited_at = NOW() WHERE id = $3 RETURNING edited_at`,
+		sealed, keyID, messageID,
 	).Scan(&newEditedAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to edit message"})
 		return
@@ -142,16 +146,16 @@ type messageVersion struct {
 // GetMessageEdits returns every version of a message, oldest first; the last
 // one is the current text. Available to all members of the room.
 func GetMessageEdits(c *gin.Context) {
-	messageID, _, ok := messageRoomForMember(c)
+	messageID, roomID, ok := messageRoomForMember(c)
 	if !ok {
 		return
 	}
 
 	rows, err := db.DB.Query(
-		`SELECT content, written_at FROM (
-		     SELECT content, written_at, created_at AS ord FROM message_edits WHERE message_id = $1
+		`SELECT content, key_id, written_at FROM (
+		     SELECT content, key_id, written_at, created_at AS ord FROM message_edits WHERE message_id = $1
 		     UNION ALL
-		     SELECT content, COALESCE(edited_at, sent_at), 'infinity'::timestamp FROM messages WHERE id = $1
+		     SELECT content, key_id, COALESCE(edited_at, sent_at), 'infinity'::timestamp FROM messages WHERE id = $1
 		 ) v
 		 ORDER BY ord ASC, written_at ASC`,
 		messageID,
@@ -165,10 +169,12 @@ func GetMessageEdits(c *gin.Context) {
 	versions := make([]messageVersion, 0)
 	for rows.Next() {
 		var v messageVersion
-		if err := rows.Scan(&v.Content, &v.At); err != nil {
+		var keyID sql.NullString
+		if err := rows.Scan(&v.Content, &keyID, &v.At); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch edit history"})
 			return
 		}
+		v.Content = openMessage(roomID, messageID, v.Content, keyID)
 		versions = append(versions, v)
 	}
 

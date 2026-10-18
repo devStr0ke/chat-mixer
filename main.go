@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/devstr0ke/chat-mixer/db"
+	"github.com/devstr0ke/chat-mixer/encryption"
 	"github.com/devstr0ke/chat-mixer/handlers"
 	"github.com/devstr0ke/chat-mixer/middleware"
 	"github.com/devstr0ke/chat-mixer/storage"
@@ -16,6 +20,11 @@ import (
 func main() {
 	godotenv.Load()
 
+	// refuse to start rather than store anything unencrypted
+	if err := encryption.Load(); err != nil {
+		log.Fatalf("encryption: %v", err)
+	}
+
 	dbURL := os.Getenv("DB_URL")
 	if dbURL == "" {
 		log.Fatal("DB_URL is not set")
@@ -23,15 +32,19 @@ func main() {
 	db.Connect(dbURL)
 	defer db.DB.Close()
 	db.Migrate()
+	// before serving, so nothing is read from rows still in plaintext
+	workers.EncryptRows(db.DB)
 
 	storage.Connect()
 	if storage.Enabled() {
 		workers.StartAttachmentCleanup(db.DB)
 	}
+	workers.StartEncryptionSweep(db.DB)
 
 	handlers.WSHub = handlers.NewHub()
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.LoggerWithFormatter(logLine), gin.Recovery())
 	r.MaxMultipartMemory = 12 << 20
 
 	r.GET("/health", func(c *gin.Context) {
@@ -116,4 +129,17 @@ func main() {
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+// logLine is gin's usual request log line without the query string, which
+// can hold what users shared or searched (link preview URLs, GIF searches).
+func logLine(p gin.LogFormatterParams) string {
+	path, _, _ := strings.Cut(p.Path, "?")
+	line := fmt.Sprintf("[GIN] %s | %3d | %13v | %15s | %-7s %q\n",
+		p.TimeStamp.Format("2006/01/02 - 15:04:05"), p.StatusCode, p.Latency.Truncate(time.Microsecond),
+		p.ClientIP, p.Method, path)
+	if p.ErrorMessage != "" {
+		line += p.ErrorMessage
+	}
+	return line
 }

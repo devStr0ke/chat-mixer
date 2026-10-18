@@ -21,20 +21,21 @@ type replyPreview struct {
 }
 
 // replyPreviewColumns selects a replyPreview from `messages rm` joined to its
-// sender `users ru`; both may be NULL when the message isn't a reply.
-const replyPreviewColumns = `rm.id, rm.sender_id, ru.pseudo, LEFT(rm.content, 140), rm.gif_id IS NOT NULL,
+// sender `users ru`; both may be NULL when the message isn't a reply. The
+// text is encrypted, so it's cut to replyPreviewLen after decrypting.
+const replyPreviewColumns = `rm.id, rm.room_id, rm.sender_id, ru.pseudo, rm.content, rm.key_id, rm.gif_id IS NOT NULL,
 	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id),
 	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id AND ra.content_type LIKE 'video/%')`
 
 // nullableReply holds the scan targets for replyPreviewColumns.
 type nullableReply struct {
-	id, senderID, pseudo, content sql.NullString
-	hasGif                        sql.NullBool
-	attachments, videos           int
+	id, roomID, senderID, pseudo, content, keyID sql.NullString
+	hasGif                                       sql.NullBool
+	attachments, videos                          int
 }
 
 func (r *nullableReply) targets() []any {
-	return []any{&r.id, &r.senderID, &r.pseudo, &r.content, &r.hasGif, &r.attachments, &r.videos}
+	return []any{&r.id, &r.roomID, &r.senderID, &r.pseudo, &r.content, &r.keyID, &r.hasGif, &r.attachments, &r.videos}
 }
 
 func (r *nullableReply) preview() *replyPreview {
@@ -45,7 +46,7 @@ func (r *nullableReply) preview() *replyPreview {
 		ID:              r.id.String,
 		SenderID:        r.senderID.String,
 		SenderPseudo:    r.pseudo.String,
-		Content:         r.content.String,
+		Content:         truncateRunes(openMessage(r.roomID.String, r.id.String, r.content.String, r.keyID), replyPreviewLen),
 		AttachmentCount: r.attachments,
 		VideoCount:      r.videos,
 		HasGif:          r.hasGif.Bool,

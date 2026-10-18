@@ -32,14 +32,18 @@ func StartAttachmentCleanup(database *sql.DB) {
 // so these are links nobody has scrolled past in a while; they're simply
 // fetched again if someone does.
 func deleteStaleLinkPreviews(database *sql.DB) {
-	rows, err := database.Query(
-		`DELETE FROM link_previews
-		 WHERE fetched_at < NOW() - INTERVAL '30 days'
-		 RETURNING image_id`,
-	)
+	if removed := deleteLinkPreviews(database, `fetched_at < NOW() - INTERVAL '30 days'`); removed > 0 {
+		log.Printf("worker: removed %d stale link previews", removed)
+	}
+}
+
+// deleteLinkPreviews drops the cached link cards matching condition, with
+// their images, and returns how many were removed.
+func deleteLinkPreviews(database *sql.DB, condition string, args ...any) int {
+	rows, err := database.Query(`DELETE FROM link_previews WHERE `+condition+` RETURNING image_id`, args...)
 	if err != nil {
 		log.Printf("worker: link preview cleanup query failed: %v", err)
-		return
+		return 0
 	}
 
 	var imageIDs []string
@@ -55,6 +59,9 @@ func deleteStaleLinkPreviews(database *sql.DB) {
 	}
 	rows.Close()
 
+	if !storage.Enabled() {
+		return removed
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	for _, id := range imageIDs {
@@ -62,9 +69,7 @@ func deleteStaleLinkPreviews(database *sql.DB) {
 			log.Printf("worker: failed to delete link preview image %s: %v", id, err)
 		}
 	}
-	if removed > 0 {
-		log.Printf("worker: removed %d stale link previews", removed)
-	}
+	return removed
 }
 
 func deleteUnsentAttachments(database *sql.DB) {
