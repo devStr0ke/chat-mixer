@@ -23,6 +23,7 @@ type lastMessageResponse struct {
 	VideoCount      int       `json:"video_count"`
 	HasGif          bool      `json:"has_gif"`
 	Sticker         bool      `json:"sticker"`
+	Drawing         bool      `json:"drawing"`
 	ViewOnce        bool      `json:"view_once"`
 	Deleted         bool      `json:"deleted"`
 	SentAt          time.Time `json:"sent_at"`
@@ -225,13 +226,14 @@ func GetMyRooms(c *gin.Context) {
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id),
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id AND a.content_type LIKE 'video/%'),
 		        COALESCE(lm.has_gif, false), COALESCE(lm.gif_sticker, false), COALESCE(lm.view_once, false),
-		        COALESCE(lm.deleted, false)
+		        COALESCE(lm.deleted, false), COALESCE(lm.drawing, false)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
 		 LEFT JOIN LATERAL (
 		     SELECT id, sender_id, content, key_id, sent_at, gif_id IS NOT NULL AS has_gif,
 		            gif_sticker OR sticker_id IS NOT NULL AS gif_sticker, view_once,
-		            deleted_at IS NOT NULL AS deleted
+		            deleted_at IS NOT NULL AS deleted,
+		            EXISTS (SELECT 1 FROM stickers s WHERE s.id = messages.sticker_id AND s.kind = 'drawing') AS drawing
 		     FROM messages
 		     WHERE room_id = r.id
 		     ORDER BY sent_at DESC, id DESC
@@ -257,10 +259,10 @@ func GetMyRooms(c *gin.Context) {
 			lmSentAt                            sql.NullTime
 			lmAttachments, lmVideos             int
 			lmHasGif, lmSticker, lmViewOnce     bool
-			lmDeleted                           bool
+			lmDeleted, lmDrawing                bool
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif, &lmSticker, &lmViewOnce, &lmDeleted); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif, &lmSticker, &lmViewOnce, &lmDeleted, &lmDrawing); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
@@ -276,6 +278,7 @@ func GetMyRooms(c *gin.Context) {
 				Sticker:         lmSticker,
 				ViewOnce:        lmViewOnce,
 				Deleted:         lmDeleted,
+				Drawing:         lmDrawing,
 				SentAt:          lmSentAt.Time,
 			}
 		}
@@ -359,7 +362,7 @@ func GetMessages(c *gin.Context) {
 	rows, err := db.DB.Query(
 		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.key_id, m.sent_at,
 		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.gif_sticker, m.edited_at, m.view_once,
-		        m.deleted_at IS NOT NULL, m.sticker_id, st.width, st.height,
+		        m.deleted_at IS NOT NULL, m.sticker_id, st.width, st.height, st.kind,
 		        `+replyPreviewColumns+`
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
@@ -384,19 +387,19 @@ func GetMessages(c *gin.Context) {
 		var m messageResponse
 		var gifID, gifURL sql.NullString
 		var gifWidth, gifHeight sql.NullInt64
-		var keyID, stickerID sql.NullString
+		var keyID, stickerID, stickerKind sql.NullString
 		var stickerWidth, stickerHeight sql.NullInt64
 		var sticker bool
 		var reply nullableReply
 		targets := append([]any{&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &keyID, &m.SentAt,
-			&gifID, &gifURL, &gifWidth, &gifHeight, &sticker, &m.EditedAt, &m.ViewOnce, &m.Deleted, &stickerID, &stickerWidth, &stickerHeight}, reply.targets()...)
+			&gifID, &gifURL, &gifWidth, &gifHeight, &sticker, &m.EditedAt, &m.ViewOnce, &m.Deleted, &stickerID, &stickerWidth, &stickerHeight, &stickerKind}, reply.targets()...)
 		if err := rows.Scan(targets...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
 		}
 		m.Content = openMessage(roomID, m.ID, m.Content, keyID)
 		m.Gif = scanGif(gifID, gifURL, gifWidth, gifHeight, sticker)
-		m.Sticker = scanSticker(stickerID, stickerWidth, stickerHeight)
+		m.Sticker = scanSticker(stickerID, stickerWidth, stickerHeight, stickerKind)
 		m.ReplyTo = reply.preview()
 		m.Reactions = make([]reactionResponse, 0)
 		m.Attachments = make([]attachmentResponse, 0)

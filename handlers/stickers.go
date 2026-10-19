@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/devstr0ke/chat-mixer/db"
@@ -18,25 +19,42 @@ import (
 // the rooms it was sent in. Removing one from your collection doesn't break
 // messages that already used it: the file is deleted once none do
 // (workers.PurgeRemovedStickers).
+//
+// Drawings made in the chat are stored the same way (kind "drawing"), but
+// they aren't part of the collection, and one that's never sent is deleted
+// after a day.
 
 const (
 	maxStickerBytes    = 1 << 20
 	maxStickerSide     = 1024
+	maxDrawingSide     = 2048 // drawings can span a wide screen
 	maxStickersPerUser = 200
+	maxDrawingsPerHour = 120
+	stickerKindSticker = "sticker"
+	stickerKindDrawing = "drawing"
 )
 
-// messageSticker is the custom sticker a message carries.
+// messageSticker is the custom sticker (or drawing) a message carries.
 type messageSticker struct {
 	ID     string `json:"id"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
+	Width  int    `json:"width"`          // a drawing: the size it was drawn at on screen
+	Height int    `json:"height"`         // (otherwise the image's own size)
+	Kind   string `json:"kind,omitempty"` // "drawing", or empty for a sticker
+}
+
+// publicKind is how a sticker's kind appears in responses.
+func publicKind(kind string) string {
+	if kind == stickerKindDrawing {
+		return stickerKindDrawing
+	}
+	return ""
 }
 
 // ListMyStickers — GET /stickers: your collection, newest first.
 func ListMyStickers(c *gin.Context) {
 	rows, err := db.DB.Query(
 		`SELECT id, width, height FROM stickers
-		 WHERE owner_id = $1 AND deleted_at IS NULL
+		 WHERE owner_id = $1 AND deleted_at IS NULL AND kind = 'sticker'
 		 ORDER BY created_at DESC`,
 		c.GetString("userID"),
 	)
@@ -57,10 +75,17 @@ func ListMyStickers(c *gin.Context) {
 	c.JSON(http.StatusOK, stickers)
 }
 
-// CreateSticker — POST /stickers (multipart field "file"): a PNG or WebP
-// (transparent) of at most 1024px a side, made by the app's sticker maker.
+// CreateSticker — POST /stickers?kind=sticker|drawing (multipart field
+// "file"): a PNG or WebP (transparent) of at most 1024px a side (2048 for a
+// drawing), made by the app's sticker maker or drawn in the chat. A drawing
+// also says the size it was drawn at on screen (display_width/_height), which
+// is the size it's shown at.
 func CreateSticker(c *gin.Context) {
 	userID := c.GetString("userID")
+	kind := stickerKindSticker
+	if c.Query("kind") == stickerKindDrawing {
+		kind = stickerKindDrawing
+	}
 	if !storage.Enabled() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "uploads are disabled"})
 		return
@@ -73,23 +98,48 @@ func CreateSticker(c *gin.Context) {
 		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "stickers must be PNG or WebP"})
 		return
 	}
-	if cfg.Width > maxStickerSide || cfg.Height > maxStickerSide {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "stickers can be at most 1024px a side"})
+	maxSide := maxStickerSide
+	if kind == stickerKindDrawing {
+		maxSide = maxDrawingSide
+	}
+	if cfg.Width > maxSide || cfg.Height > maxSide {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "the image is too large"})
 		return
+	}
+	width, height := cfg.Width, cfg.Height
+	if kind == stickerKindDrawing {
+		w, errW := strconv.Atoi(c.PostForm("display_width"))
+		h, errH := strconv.Atoi(c.PostForm("display_height"))
+		if errW == nil && errH == nil && w > 0 && h > 0 && w <= 8000 && h <= 8000 {
+			width, height = w, h
+		}
 	}
 
 	var count int
-	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM stickers WHERE owner_id = $1 AND deleted_at IS NULL`, userID).Scan(&count); err != nil {
+	limit, limitQuery := maxStickersPerUser,
+		`SELECT COUNT(*) FROM stickers WHERE owner_id = $1 AND deleted_at IS NULL AND kind = 'sticker'`
+	if kind == stickerKindDrawing {
+		limit, limitQuery = maxDrawingsPerHour,
+			`SELECT COUNT(*) FROM stickers WHERE owner_id = $1 AND kind = 'drawing' AND created_at > NOW() - INTERVAL '1 hour'`
+	}
+	if err := db.DB.QueryRow(limitQuery, userID).Scan(&count); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sticker"})
 		return
 	}
-	if count >= maxStickersPerUser {
-		c.JSON(http.StatusConflict, gin.H{"error": "you have too many stickers, remove some first"})
+	if count >= limit {
+		msg := "you have too many stickers, remove some first"
+		if kind == stickerKindDrawing {
+			msg = "too many drawings, try again later"
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": msg})
 		return
 	}
 
 	id := uuid.NewString()
 	key := "stickers/" + userID + "/" + id + "." + allowedImageTypes[contentType]
+	if kind == stickerKindDrawing {
+		key = "drawings/" + userID + "/" + id + "." + allowedImageTypes[contentType]
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	if err := storage.Put(ctx, key, contentType, data); err != nil {
@@ -98,14 +148,14 @@ func CreateSticker(c *gin.Context) {
 		return
 	}
 	if _, err := db.DB.Exec(
-		`INSERT INTO stickers (id, owner_id, object_key, content_type, width, height) VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, userID, key, contentType, cfg.Width, cfg.Height,
+		`INSERT INTO stickers (id, owner_id, object_key, content_type, width, height, kind) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		id, userID, key, contentType, width, height, kind,
 	); err != nil {
 		storage.Delete(context.Background(), key)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sticker"})
 		return
 	}
-	c.JSON(http.StatusCreated, messageSticker{ID: id, Width: cfg.Width, Height: cfg.Height})
+	c.JSON(http.StatusCreated, messageSticker{ID: id, Width: width, Height: height, Kind: publicKind(kind)})
 }
 
 // DeleteSticker — DELETE /stickers/:sticker_id: removes it from your collection.
@@ -180,19 +230,20 @@ func loadOwnSticker(userID, stickerID string) (*messageSticker, error) {
 	}
 	var s messageSticker
 	err := db.DB.QueryRow(
-		`SELECT id, width, height FROM stickers WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
+		`SELECT id, width, height, kind FROM stickers WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
 		stickerID, userID,
-	).Scan(&s.ID, &s.Width, &s.Height)
+	).Scan(&s.ID, &s.Width, &s.Height, &s.Kind)
 	if err != nil {
 		return nil, err
 	}
+	s.Kind = publicKind(s.Kind)
 	return &s, nil
 }
 
 // scanSticker turns a message's nullable sticker columns into its sticker.
-func scanSticker(id sql.NullString, width, height sql.NullInt64) *messageSticker {
+func scanSticker(id sql.NullString, width, height sql.NullInt64, kind sql.NullString) *messageSticker {
 	if !id.Valid {
 		return nil
 	}
-	return &messageSticker{ID: id.String, Width: int(width.Int64), Height: int(height.Int64)}
+	return &messageSticker{ID: id.String, Width: int(width.Int64), Height: int(height.Int64), Kind: publicKind(kind.String)}
 }

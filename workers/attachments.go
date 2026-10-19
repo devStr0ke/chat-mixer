@@ -114,12 +114,13 @@ func deleteUnsentAttachments(database *sql.DB) {
 	}
 }
 
-// PurgeRemovedStickers deletes stickers removed from their owner's collection
-// once no message uses them any more (their files go with them).
+// PurgeRemovedStickers deletes stickers removed from their owner's collection,
+// and drawings older than a day, once no message uses them (their files go
+// with them).
 func PurgeRemovedStickers(database *sql.DB) {
 	rows, err := database.Query(
 		`DELETE FROM stickers s
-		 WHERE s.deleted_at IS NOT NULL
+		 WHERE (s.deleted_at IS NOT NULL OR (s.kind = 'drawing' AND s.created_at < NOW() - INTERVAL '24 hours'))
 		   AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.sticker_id = s.id)
 		 RETURNING s.object_key`,
 	)
@@ -144,6 +145,6 @@ func PurgeRemovedStickers(database *sql.DB) {
 		}
 	}
 	if len(keys) > 0 {
-		log.Printf("worker: deleted %d removed stickers", len(keys))
+		log.Printf("worker: deleted %d removed stickers and unsent drawings", len(keys))
 	}
 }

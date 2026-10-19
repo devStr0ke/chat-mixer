@@ -18,6 +18,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Replies: a message can quote another message of the same room
 - Senders can edit their messages; every version is kept and visible to the room
 - Custom stickers: users cut stickers out of their photos in the app and keep a collection; a sent sticker is visible to that room's members
+- Drawings: drawn over the conversation and sent like a sticker (not added to the collection)
 - Senders can delete their messages for everyone: text, files, reactions and edit history are erased and the room sees "This message was deleted"
 - Link previews: the server fetches a link's title, description and image (with SSRF protection) for a card under the message
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
@@ -218,11 +219,11 @@ The web app uploads straight to the API rather than through its `/api` rewrite, 
 | Method | Route | Description |
 |---|---|---|
 | GET | `/stickers` | Your sticker collection, newest first: `[{ id, width, height }]` |
-| POST | `/stickers` | Add a sticker (multipart field `file`): PNG or WebP, at most 1 MB and 1024px a side; up to 200 per user. Returns `{ id, width, height }` |
+| POST | `/stickers?kind=sticker\|drawing` | Add a sticker (multipart field `file`): PNG or WebP, at most 1 MB and 1024px a side; up to 200 per user. With `kind=drawing` it's a drawing to send: not listed in the collection, up to 120 an hour, and deleted after a day if it's never sent. Returns `{ id, width, height, kind }` |
 | DELETE | `/stickers/:sticker_id` | Remove one from your collection. Messages that already used it keep showing it; the file is deleted once none do (hourly cleanup) |
 | GET | `/stickers/:sticker_id/image` | The image, for its owner and for members of rooms it was sent in (accepts the `token` cookie) |
 
-To send one, pass `"sticker_id"` over the WebSocket (on its own: no text, files or GIF; only from your own collection). Messages then carry `"sticker": { id, width, height }`, and `last_message` / reply quotes have `sticker: true`.
+To send one, pass `"sticker_id"` over the WebSocket (on its own: no text, files or GIF; only from your own collection). Messages then carry `"sticker": { id, width, height, kind }` (`kind: "drawing"` for drawings), and `last_message` / reply quotes have `sticker: true` (and `drawing: true` for a drawing).
 
 ### Deleting
 | Method | Route | Description |

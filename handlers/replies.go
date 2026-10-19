@@ -19,6 +19,7 @@ type replyPreview struct {
 	VideoCount      int    `json:"video_count"`
 	HasGif          bool   `json:"has_gif"`
 	Sticker         bool   `json:"sticker"`
+	Drawing         bool   `json:"drawing"`
 	ViewOnce        bool   `json:"view_once"`
 	Deleted         bool   `json:"deleted"`
 }
@@ -26,19 +27,20 @@ type replyPreview struct {
 // replyPreviewColumns selects a replyPreview from `messages rm` joined to its
 // sender `users ru`; both may be NULL when the message isn't a reply. The
 // text is encrypted, so it's cut to replyPreviewLen after decrypting.
-const replyPreviewColumns = `rm.id, rm.room_id, rm.sender_id, ru.pseudo, rm.content, rm.key_id, rm.gif_id IS NOT NULL, rm.gif_sticker OR rm.sticker_id IS NOT NULL, rm.view_once, rm.deleted_at IS NOT NULL,
+const replyPreviewColumns = `rm.id, rm.room_id, rm.sender_id, ru.pseudo, rm.content, rm.key_id, rm.gif_id IS NOT NULL, rm.gif_sticker OR rm.sticker_id IS NOT NULL,
+	EXISTS (SELECT 1 FROM stickers rs WHERE rs.id = rm.sticker_id AND rs.kind = 'drawing'), rm.view_once, rm.deleted_at IS NOT NULL,
 	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id),
 	(SELECT COUNT(*) FROM attachments ra WHERE ra.message_id = rm.id AND ra.content_type LIKE 'video/%')`
 
 // nullableReply holds the scan targets for replyPreviewColumns.
 type nullableReply struct {
 	id, roomID, senderID, pseudo, content, keyID sql.NullString
-	hasGif, sticker, viewOnce, deleted           sql.NullBool
+	hasGif, sticker, drawing, viewOnce, deleted  sql.NullBool
 	attachments, videos                          int
 }
 
 func (r *nullableReply) targets() []any {
-	return []any{&r.id, &r.roomID, &r.senderID, &r.pseudo, &r.content, &r.keyID, &r.hasGif, &r.sticker, &r.viewOnce, &r.deleted, &r.attachments, &r.videos}
+	return []any{&r.id, &r.roomID, &r.senderID, &r.pseudo, &r.content, &r.keyID, &r.hasGif, &r.sticker, &r.drawing, &r.viewOnce, &r.deleted, &r.attachments, &r.videos}
 }
 
 func (r *nullableReply) preview() *replyPreview {
@@ -54,6 +56,7 @@ func (r *nullableReply) preview() *replyPreview {
 		VideoCount:      r.videos,
 		HasGif:          r.hasGif.Bool,
 		Sticker:         r.sticker.Bool,
+		Drawing:         r.drawing.Bool,
 		ViewOnce:        r.viewOnce.Bool,
 		Deleted:         r.deleted.Bool,
 	}

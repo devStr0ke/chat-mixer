@@ -163,6 +163,8 @@ func Migrate() {
 			deleted_at   TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_stickers_owner ON stickers (owner_id, created_at DESC)`,
+		// 'sticker' (in the owner's collection) or 'drawing' (drawn in the chat, sent once)
+		`ALTER TABLE stickers ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'sticker'`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sticker_id UUID REFERENCES stickers(id) ON DELETE SET NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_sticker ON messages (sticker_id) WHERE sticker_id IS NOT NULL`,
 		// previous versions of edited messages; written_at is when that version was typed
