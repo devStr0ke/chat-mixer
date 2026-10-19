@@ -59,15 +59,20 @@ func ReactToMessage(c *gin.Context) {
 		return
 	}
 
-	// upsert: one reaction per user per message — patch emoji if already exists
-	_, err := db.DB.Exec(
+	// upsert: one reaction per user per message — patch emoji if already exists.
+	// Deleted messages can't be reacted to.
+	res, err := db.DB.Exec(
 		`INSERT INTO message_reactions (message_id, user_id, emoji)
-		 VALUES ($1, $2, $3)
+		 SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM messages WHERE id = $1 AND deleted_at IS NULL)
 		 ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = $3, created_at = NOW()`,
 		messageID, userID, req.Emoji,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save reaction"})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		c.JSON(http.StatusGone, gin.H{"error": "this message was deleted"})
 		return
 	}
 

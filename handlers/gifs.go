@@ -18,11 +18,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GIF search is proxied through the API so the GIPHY key never reaches the
-// browser. Results are cached: starter keys only allow 100 calls per hour.
+// GIF and sticker search is proxied through the API so the GIPHY key never
+// reaches the browser. Results are cached: starter keys only allow 100 calls
+// per hour.
 
 const (
-	giphyBaseURL   = "https://api.giphy.com/v1/gifs"
+	giphyBaseURL   = "https://api.giphy.com/v1"
 	gifPageSize    = 24
 	gifRating      = "pg-13"
 	gifMaxOffset   = 4999 // GIPHY's own limit
@@ -40,12 +41,13 @@ var (
 	errGifNotFound    = errors.New("gif not found")
 )
 
-// messageGif is the GIF attached to a message.
+// messageGif is the GIF (or GIPHY sticker) attached to a message.
 type messageGif struct {
-	ID     string `json:"id"`
-	URL    string `json:"url"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Sticker bool   `json:"sticker,omitempty"` // transparent: shown without a bubble
 }
 
 // gifResponse is a search result: the rendition sent in messages plus a
@@ -136,10 +138,20 @@ type giphyRendition struct {
 	Height string `json:"height"`
 }
 
+// giphyFlag reads GIPHY's is_sticker, which comes as 0/1 or as a boolean.
+type giphyFlag bool
+
+func (f *giphyFlag) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	*f = giphyFlag(s == "1" || s == "true")
+	return nil
+}
+
 type giphyItem struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Images struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	IsSticker giphyFlag `json:"is_sticker"`
+	Images    struct {
 		FixedHeight giphyRendition `json:"fixed_height"`
 		FixedWidth  giphyRendition `json:"fixed_width"`
 	} `json:"images"`
@@ -177,7 +189,7 @@ func (item giphyItem) toResponse() (gifResponse, bool) {
 		previewURL, pw, ph = mediaURL, w, h
 	}
 	return gifResponse{
-		messageGif:    messageGif{ID: item.ID, URL: mediaURL, Width: w, Height: h},
+		messageGif:    messageGif{ID: item.ID, URL: mediaURL, Width: w, Height: h, Sticker: bool(item.IsSticker)},
 		Title:         item.Title,
 		PreviewURL:    previewURL,
 		PreviewWidth:  pw,
@@ -254,7 +266,8 @@ func resolveGif(id string) (messageGif, error) {
 	var body struct {
 		Data giphyItem `json:"data"`
 	}
-	if err := giphyGet("/"+id, url.Values{}, &body); err != nil {
+	// stickers are GIPHY items too: this answers for both, and says which it is
+	if err := giphyGet("/gifs/"+id, url.Values{}, &body); err != nil {
 		return messageGif{}, err
 	}
 	g, ok := body.Data.toResponse()
@@ -269,11 +282,19 @@ func resolveGif(id string) (messageGif, error) {
 }
 
 // scanGif turns nullable gif columns into a message's gif.
-func scanGif(id, mediaURL sql.NullString, width, height sql.NullInt64) *messageGif {
+func scanGif(id, mediaURL sql.NullString, width, height sql.NullInt64, sticker bool) *messageGif {
 	if !id.Valid || !mediaURL.Valid {
 		return nil
 	}
-	return &messageGif{ID: id.String, URL: mediaURL.String, Width: int(width.Int64), Height: int(height.Int64)}
+	return &messageGif{ID: id.String, URL: mediaURL.String, Width: int(width.Int64), Height: int(height.Int64), Sticker: sticker}
+}
+
+// gifKind reads ?kind=: "stickers" searches GIPHY's stickers, anything else GIFs.
+func gifKind(c *gin.Context) string {
+	if c.Query("kind") == "stickers" {
+		return "stickers"
+	}
+	return "gifs"
 }
 
 // --- handlers ---
@@ -317,7 +338,7 @@ func respondWithGifPage(c *gin.Context, cacheKey, path string, params url.Values
 	c.JSON(http.StatusOK, page)
 }
 
-// SearchGifs — GET /gifs/search?q=&offset=
+// SearchGifs — GET /gifs/search?q=&offset=&kind=gifs|stickers
 func SearchGifs(c *gin.Context) {
 	q := strings.ToLower(strings.TrimSpace(c.Query("q")))
 	if q == "" || len(q) > 100 {
@@ -329,15 +350,17 @@ func SearchGifs(c *gin.Context) {
 		return
 	}
 
+	kind := gifKind(c)
 	params := url.Values{"q": {q}, "lang": {"en"}}
-	respondWithGifPage(c, fmt.Sprintf("search|%s|%d", q, offset), "/search", params, offset, gifSearchTTL)
+	respondWithGifPage(c, fmt.Sprintf("%s|search|%s|%d", kind, q, offset), "/"+kind+"/search", params, offset, gifSearchTTL)
 }
 
-// TrendingGifs — GET /gifs/trending?offset=
+// TrendingGifs — GET /gifs/trending?offset=&kind=gifs|stickers
 func TrendingGifs(c *gin.Context) {
 	offset, ok := gifOffset(c)
 	if !ok {
 		return
 	}
-	respondWithGifPage(c, fmt.Sprintf("trending|%d", offset), "/trending", url.Values{}, offset, gifTrendingTTL)
+	kind := gifKind(c)
+	respondWithGifPage(c, fmt.Sprintf("%s|trending|%d", kind, offset), "/"+kind+"/trending", url.Values{}, offset, gifTrendingTTL)
 }

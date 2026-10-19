@@ -19,10 +19,12 @@ func StartAttachmentCleanup(database *sql.DB) {
 		deleteUnsentAttachments(database)
 		deleteStaleLinkPreviews(database)
 		PurgeViewOnce(database)
+		PurgeRemovedStickers(database)
 		for range ticker.C {
 			deleteUnsentAttachments(database)
 			deleteStaleLinkPreviews(database)
 			PurgeViewOnce(database)
+			PurgeRemovedStickers(database)
 		}
 	}()
 
@@ -109,5 +111,39 @@ func deleteUnsentAttachments(database *sql.DB) {
 	}
 	if removed > 0 {
 		log.Printf("worker: removed %d unsent attachments", removed)
+	}
+}
+
+// PurgeRemovedStickers deletes stickers removed from their owner's collection
+// once no message uses them any more (their files go with them).
+func PurgeRemovedStickers(database *sql.DB) {
+	rows, err := database.Query(
+		`DELETE FROM stickers s
+		 WHERE s.deleted_at IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.sticker_id = s.id)
+		 RETURNING s.object_key`,
+	)
+	if err != nil {
+		log.Printf("worker: sticker cleanup query failed: %v", err)
+		return
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil {
+			keys = append(keys, key)
+		}
+	}
+	rows.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	for _, key := range keys {
+		if err := storage.Delete(ctx, key); err != nil {
+			log.Printf("worker: failed to delete sticker %s: %v", key, err)
+		}
+	}
+	if len(keys) > 0 {
+		log.Printf("worker: deleted %d removed stickers", len(keys))
 	}
 }

@@ -58,19 +58,20 @@ func EditMessage(c *gin.Context) {
 		currentKeyID              sql.NullString
 		editedAt                  *time.Time
 		hasMedia, viewOnce        bool
+		deleted                   bool
 		edits                     int
 	)
 	// the row lock keeps concurrent edits of the same message in order
 	err = tx.QueryRow(
-		`SELECT m.room_id, m.sender_id, m.content, m.key_id, m.edited_at, m.view_once,
-		        m.gif_id IS NOT NULL OR EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id),
+		`SELECT m.room_id, m.sender_id, m.content, m.key_id, m.edited_at, m.view_once, m.deleted_at IS NOT NULL,
+		        m.gif_id IS NOT NULL OR m.sticker_id IS NOT NULL OR EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id),
 		        (SELECT COUNT(*) FROM message_edits e WHERE e.message_id = m.id)
 		 FROM messages m
 		 JOIN room_members rm ON rm.room_id = m.room_id AND rm.user_id = $2
 		 WHERE m.id = $1
 		 FOR UPDATE OF m`,
 		messageID, userID,
-	).Scan(&roomID, &senderID, &current, &currentKeyID, &editedAt, &viewOnce, &hasMedia, &edits)
+	).Scan(&roomID, &senderID, &current, &currentKeyID, &editedAt, &viewOnce, &deleted, &hasMedia, &edits)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
 		return
@@ -81,6 +82,10 @@ func EditMessage(c *gin.Context) {
 	}
 	if senderID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own messages"})
+		return
+	}
+	if deleted {
+		c.JSON(http.StatusGone, gin.H{"error": "this message was deleted"})
 		return
 	}
 	if viewOnce {

@@ -147,6 +147,24 @@ func Migrate() {
 		)`,
 		// set when a view-once file has been deleted from the bucket
 		`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS purged_at TIMESTAMP`,
+		// deleted by its sender: emptied, kept as a "This message was deleted" marker
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`,
+		// the message's GIF is a GIPHY sticker (transparent, shown without a bubble)
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS gif_sticker BOOLEAN NOT NULL DEFAULT false`,
+		// stickers users made from their photos; deleted_at: removed from the collection
+		`CREATE TABLE IF NOT EXISTS stickers (
+			id           UUID PRIMARY KEY,
+			owner_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			object_key   TEXT NOT NULL,
+			content_type VARCHAR(64) NOT NULL,
+			width        INT NOT NULL,
+			height       INT NOT NULL,
+			created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+			deleted_at   TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stickers_owner ON stickers (owner_id, created_at DESC)`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sticker_id UUID REFERENCES stickers(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_sticker ON messages (sticker_id) WHERE sticker_id IS NOT NULL`,
 		// previous versions of edited messages; written_at is when that version was typed
 		`CREATE TABLE IF NOT EXISTS message_edits (
 			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

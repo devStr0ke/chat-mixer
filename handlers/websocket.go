@@ -40,6 +40,8 @@ type WSMessage struct {
 	ReplyTo       *replyPreview        `json:"reply_to,omitempty"`       // server → client
 	Attachments   []attachmentResponse `json:"attachments,omitempty"`    // server → client
 	ViewOnce      bool                 `json:"view_once,omitempty"`      // both ways
+	StickerID     string               `json:"sticker_id,omitempty"`     // client → server: one of your stickers
+	Sticker       *messageSticker      `json:"sticker,omitempty"`        // server → client
 }
 
 // --- Hub ---
@@ -269,13 +271,31 @@ func (c *Client) readPump() {
 
 func (c *Client) handleMessage(msg WSMessage) {
 	content := strings.TrimSpace(msg.Content)
-	if content == "" && len(msg.AttachmentIDs) == 0 && msg.GifID == "" {
+	if content == "" && len(msg.AttachmentIDs) == 0 && msg.GifID == "" && msg.StickerID == "" {
 		return
 	}
 	// a view-once message is one photo or video, nothing else
 	if msg.ViewOnce && (len(msg.AttachmentIDs) != 1 || content != "" || msg.GifID != "") {
 		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
 		return
+	}
+
+	// a sticker is sent on its own, and only from your own collection
+	var sticker *messageSticker
+	if msg.StickerID != "" {
+		var err error
+		if content != "" || len(msg.AttachmentIDs) > 0 || msg.GifID != "" || msg.ViewOnce {
+			err = sql.ErrNoRows
+		} else {
+			sticker, err = loadOwnSticker(c.UserID, msg.StickerID)
+		}
+		if err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("ws: failed to load sticker: %v", err)
+			}
+			c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
+			return
+		}
 	}
 
 	var gif *messageGif
@@ -312,6 +332,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		Gif:           gif,
 		ReplyToID:     msg.ReplyToID,
 		ViewOnce:      msg.ViewOnce,
+		Sticker:       sticker,
 	})
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
@@ -331,6 +352,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		Gif:          gif,
 		ReplyTo:      replyTo,
 		ViewOnce:     msg.ViewOnce,
+		Sticker:      sticker,
 	}
 	if msg.ViewOnce {
 		for i := range out.Attachments {
@@ -370,6 +392,7 @@ type newMessage struct {
 	Gif           *messageGif
 	ReplyToID     string // already checked to be a message of this room
 	ViewOnce      bool
+	Sticker       *messageSticker // already checked to be the sender's
 }
 
 // saveMessage stores a message (with its GIF and reply target, if any) and
@@ -404,14 +427,19 @@ func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachm
 		gifHeight = sql.NullInt64{Int64: int64(gif.Height), Valid: true}
 	}
 
+	var stickerID sql.NullString
+	if m.Sticker != nil {
+		stickerID = sql.NullString{String: m.Sticker.ID, Valid: true}
+	}
+
 	// the id is picked here because the encryption is bound to it
 	id = uuid.NewString()
 	sealed, keyID := sealMessage(c.RoomID, id, content)
 	if err = tx.QueryRow(
-		`INSERT INTO messages (id, room_id, sender_id, content, key_id, gif_id, gif_url, gif_width, gif_height, reply_to_id, view_once)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`INSERT INTO messages (id, room_id, sender_id, content, key_id, gif_id, gif_url, gif_width, gif_height, gif_sticker, reply_to_id, view_once, sticker_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING sent_at`,
-		id, c.RoomID, c.UserID, sealed, keyID, gifID, gifURL, gifWidth, gifHeight, replyToID, m.ViewOnce,
+		id, c.RoomID, c.UserID, sealed, keyID, gifID, gifURL, gifWidth, gifHeight, gif != nil && gif.Sticker, replyToID, m.ViewOnce, stickerID,
 	).Scan(&sentAt); err != nil {
 		return "", time.Time{}, nil, err
 	}

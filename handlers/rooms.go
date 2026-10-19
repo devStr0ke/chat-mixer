@@ -22,7 +22,9 @@ type lastMessageResponse struct {
 	AttachmentCount int       `json:"attachment_count"`
 	VideoCount      int       `json:"video_count"`
 	HasGif          bool      `json:"has_gif"`
+	Sticker         bool      `json:"sticker"`
 	ViewOnce        bool      `json:"view_once"`
+	Deleted         bool      `json:"deleted"`
 	SentAt          time.Time `json:"sent_at"`
 }
 
@@ -67,10 +69,13 @@ type messageResponse struct {
 	Gif          *messageGif          `json:"gif"`
 	ReplyTo      *replyPreview        `json:"reply_to"`
 	EditedAt     *time.Time           `json:"edited_at"`
+	Sticker      *messageSticker      `json:"sticker,omitempty"` // a custom sticker
 	// view-once messages: who opened it, and whether its file is gone
 	ViewOnce bool          `json:"view_once,omitempty"`
 	Opens    []messageOpen `json:"opens,omitempty"`
 	Expired  bool          `json:"expired,omitempty"`
+	// deleted by its sender: everything else is empty
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 type messagePageResponse struct {
@@ -219,11 +224,15 @@ func GetMyRooms(c *gin.Context) {
 		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.key_id, lm.sent_at,
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id),
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id AND a.content_type LIKE 'video/%'),
-		        COALESCE(lm.has_gif, false), COALESCE(lm.view_once, false)
+		        COALESCE(lm.has_gif, false), COALESCE(lm.gif_sticker, false), COALESCE(lm.view_once, false),
+		        COALESCE(lm.deleted, false)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
 		 LEFT JOIN LATERAL (
-		     SELECT id, sender_id, content, key_id, sent_at, gif_id IS NOT NULL AS has_gif, view_once FROM messages
+		     SELECT id, sender_id, content, key_id, sent_at, gif_id IS NOT NULL AS has_gif,
+		            gif_sticker OR sticker_id IS NOT NULL AS gif_sticker, view_once,
+		            deleted_at IS NOT NULL AS deleted
+		     FROM messages
 		     WHERE room_id = r.id
 		     ORDER BY sent_at DESC, id DESC
 		     LIMIT 1
@@ -247,10 +256,11 @@ func GetMyRooms(c *gin.Context) {
 			lmKeyID                             sql.NullString
 			lmSentAt                            sql.NullTime
 			lmAttachments, lmVideos             int
-			lmHasGif, lmViewOnce                bool
+			lmHasGif, lmSticker, lmViewOnce     bool
+			lmDeleted                           bool
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif, &lmViewOnce); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif, &lmSticker, &lmViewOnce, &lmDeleted); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
@@ -263,7 +273,9 @@ func GetMyRooms(c *gin.Context) {
 				AttachmentCount: lmAttachments,
 				VideoCount:      lmVideos,
 				HasGif:          lmHasGif,
+				Sticker:         lmSticker,
 				ViewOnce:        lmViewOnce,
+				Deleted:         lmDeleted,
 				SentAt:          lmSentAt.Time,
 			}
 		}
@@ -346,10 +358,12 @@ func GetMessages(c *gin.Context) {
 	// fetch one extra row to know whether older messages remain
 	rows, err := db.DB.Query(
 		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.key_id, m.sent_at,
-		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.edited_at, m.view_once,
+		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.gif_sticker, m.edited_at, m.view_once,
+		        m.deleted_at IS NOT NULL, m.sticker_id, st.width, st.height,
 		        `+replyPreviewColumns+`
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
+		 LEFT JOIN stickers st ON st.id = m.sticker_id
 		 LEFT JOIN messages rm ON rm.id = m.reply_to_id
 		 LEFT JOIN users ru ON ru.id = rm.sender_id
 		 WHERE m.room_id = $1
@@ -370,16 +384,19 @@ func GetMessages(c *gin.Context) {
 		var m messageResponse
 		var gifID, gifURL sql.NullString
 		var gifWidth, gifHeight sql.NullInt64
-		var keyID sql.NullString
+		var keyID, stickerID sql.NullString
+		var stickerWidth, stickerHeight sql.NullInt64
+		var sticker bool
 		var reply nullableReply
 		targets := append([]any{&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &keyID, &m.SentAt,
-			&gifID, &gifURL, &gifWidth, &gifHeight, &m.EditedAt, &m.ViewOnce}, reply.targets()...)
+			&gifID, &gifURL, &gifWidth, &gifHeight, &sticker, &m.EditedAt, &m.ViewOnce, &m.Deleted, &stickerID, &stickerWidth, &stickerHeight}, reply.targets()...)
 		if err := rows.Scan(targets...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
 		}
 		m.Content = openMessage(roomID, m.ID, m.Content, keyID)
-		m.Gif = scanGif(gifID, gifURL, gifWidth, gifHeight)
+		m.Gif = scanGif(gifID, gifURL, gifWidth, gifHeight, sticker)
+		m.Sticker = scanSticker(stickerID, stickerWidth, stickerHeight)
 		m.ReplyTo = reply.preview()
 		m.Reactions = make([]reactionResponse, 0)
 		m.Attachments = make([]attachmentResponse, 0)

@@ -17,6 +17,8 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - A GIF library (GIPHY) searchable from the chat, proxied by the API so the key stays server-side
 - Replies: a message can quote another message of the same room
 - Senders can edit their messages; every version is kept and visible to the room
+- Custom stickers: users cut stickers out of their photos in the app and keep a collection; a sent sticker is visible to that room's members
+- Senders can delete their messages for everyone: text, files, reactions and edit history are erased and the room sees "This message was deleted"
 - Link previews: the server fetches a link's title, description and image (with SSRF protection) for a card under the message
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
@@ -87,6 +89,10 @@ go run .
 
 Migrations run automatically on startup. A database created by the old 1:1 ephemeral version is upgraded in place: closed rooms are dropped, and active ones become two-member groups that keep their history.
 
+### Local test accounts
+
+The local database used during development has test users `alice`, `bob`, `carol` and `dave`, all with the password `password123` (local only; they don't exist in production). Register more from the app's sign-up page.
+
 ### 3. Health check
 
 ```bash
@@ -113,6 +119,8 @@ handlers/
   attachments.go      — photo/video upload and download (with Range)
   videos.go           — video type detection, streamed storage, poster frames
   viewonce.go         — opening view-once messages, who opened what
+  stickers.go         — custom sticker collection, upload and serving
+  deletes.go          — deleting a message for everyone
   profile.go          — profile, countries and avatars
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
   replies.go          — quoted-message previews for replies
@@ -206,6 +214,21 @@ Videos are stored as uploaded, not re-encoded: they're streamed to the bucket (n
 
 The web app uploads straight to the API rather than through its `/api` rewrite, because Next.js caps proxied request bodies at 10 MB. That route alone answers CORS preflights, for the origins in `CORS_ORIGINS`; it authenticates with the `Authorization` header only, never cookies.
 
+### Custom stickers
+| Method | Route | Description |
+|---|---|---|
+| GET | `/stickers` | Your sticker collection, newest first: `[{ id, width, height }]` |
+| POST | `/stickers` | Add a sticker (multipart field `file`): PNG or WebP, at most 1 MB and 1024px a side; up to 200 per user. Returns `{ id, width, height }` |
+| DELETE | `/stickers/:sticker_id` | Remove one from your collection. Messages that already used it keep showing it; the file is deleted once none do (hourly cleanup) |
+| GET | `/stickers/:sticker_id/image` | The image, for its owner and for members of rooms it was sent in (accepts the `token` cookie) |
+
+To send one, pass `"sticker_id"` over the WebSocket (on its own: no text, files or GIF; only from your own collection). Messages then carry `"sticker": { id, width, height }`, and `last_message` / reply quotes have `sticker: true`.
+
+### Deleting
+| Method | Route | Description |
+|---|---|---|
+| DELETE | `/messages/:message_id` | Delete your own message for everyone (`204`, also when already deleted). Its text, GIF, files (from the bucket too), reactions, edit history and view-once opens are erased; the message stays in history with `"deleted": true` and empty fields. Every member gets `{ "type": "message_deleted", "id", "room_id" }`. A deleted message can't be edited, reacted to (`410`) or replied to; quotes of it carry `"deleted": true` |
+
 ### View once
 | Method | Route | Description |
 |---|---|---|
@@ -236,10 +259,10 @@ go test ./linkpreview/
 ### GIFs
 | Method | Route | Description |
 |---|---|---|
-| GET | `/gifs/search?q=&offset=` | Search GIPHY. Returns `{ gifs: [{ id, title, url, width, height, preview_url, preview_width, preview_height }], next_offset }` |
-| GET | `/gifs/trending?offset=` | Trending GIFs, same shape |
+| GET | `/gifs/search?q=&offset=&kind=` | Search GIPHY. `kind=stickers` searches stickers instead of GIFs. Returns `{ gifs: [{ id, title, url, width, height, sticker, preview_url, preview_width, preview_height }], next_offset }` |
+| GET | `/gifs/trending?offset=&kind=` | Trending GIFs (or stickers), same shape |
 
-Results are cached (10 min for searches, 15 min for trending) because starter GIPHY keys allow 100 calls per hour. GIFs are hotlinked from GIPHY's CDN, not stored. To send one, a client passes its `gif_id` over the WebSocket and the server resolves the URL itself, so clients can't inject arbitrary image URLs.
+Results are cached (10 min for searches, 15 min for trending) because starter GIPHY keys allow 100 calls per hour. GIFs are hotlinked from GIPHY's CDN, not stored. To send one, a client passes its `gif_id` over the WebSocket and the server resolves the URL itself, so clients can't inject arbitrary image URLs; whether it's a sticker (transparent, shown without a bubble) also comes from GIPHY's data, as `gif.sticker`.
 
 ### Invitations
 | Method | Route | Description |

@@ -98,6 +98,13 @@ func main() {
 		gifs.GET("/trending", handlers.TrendingGifs)
 	}
 
+	stickers := r.Group("/stickers", protected)
+	{
+		stickers.GET("", handlers.ListMyStickers)
+		stickers.POST("", handlers.CreateSticker)
+		stickers.DELETE("/:sticker_id", handlers.DeleteSticker)
+	}
+
 	invitations := r.Group("/invitations", protected)
 	{
 		invitations.GET("", handlers.GetMyInvitations)
@@ -112,11 +119,13 @@ func main() {
 		messages.PATCH("/:message_id", handlers.EditMessage)
 		messages.GET("/:message_id/edits", handlers.GetMessageEdits)
 		messages.POST("/:message_id/open", handlers.OpenViewOnce)
+		messages.DELETE("/:message_id", handlers.DeleteMessage)
 	}
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
 	r.GET("/attachments/:attachment_id/poster", middleware.AuthRequiredOrCookie(), handlers.GetAttachmentPoster)
 	r.GET("/avatars/:avatar_id", middleware.AuthRequiredOrCookie(), handlers.GetAvatar)
+	r.GET("/stickers/:sticker_id/image", middleware.AuthRequiredOrCookie(), handlers.GetStickerImage)
 	r.GET("/rooms/:room_id/background/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetRoomBackground)
 
 	r.GET("/ws/notifications", protected, handlers.HandleNotificationWS)
