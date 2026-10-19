@@ -111,6 +111,7 @@ func main() {
 		messages.DELETE("/:message_id/reactions", handlers.RemoveReaction)
 		messages.PATCH("/:message_id", handlers.EditMessage)
 		messages.GET("/:message_id/edits", handlers.GetMessageEdits)
+		messages.POST("/:message_id/open", handlers.OpenViewOnce)
 	}
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)

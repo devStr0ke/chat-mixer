@@ -22,6 +22,7 @@ type lastMessageResponse struct {
 	AttachmentCount int       `json:"attachment_count"`
 	VideoCount      int       `json:"video_count"`
 	HasGif          bool      `json:"has_gif"`
+	ViewOnce        bool      `json:"view_once"`
 	SentAt          time.Time `json:"sent_at"`
 }
 
@@ -66,6 +67,10 @@ type messageResponse struct {
 	Gif          *messageGif          `json:"gif"`
 	ReplyTo      *replyPreview        `json:"reply_to"`
 	EditedAt     *time.Time           `json:"edited_at"`
+	// view-once messages: who opened it, and whether its file is gone
+	ViewOnce bool          `json:"view_once,omitempty"`
+	Opens    []messageOpen `json:"opens,omitempty"`
+	Expired  bool          `json:"expired,omitempty"`
 }
 
 type messagePageResponse struct {
@@ -214,11 +219,11 @@ func GetMyRooms(c *gin.Context) {
 		        lm.id, lm.sender_id, lu.pseudo, lm.content, lm.key_id, lm.sent_at,
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id),
 		        (SELECT COUNT(*) FROM attachments a WHERE a.message_id = lm.id AND a.content_type LIKE 'video/%'),
-		        COALESCE(lm.has_gif, false)
+		        COALESCE(lm.has_gif, false), COALESCE(lm.view_once, false)
 		 FROM room_members rm
 		 JOIN rooms r ON r.id = rm.room_id
 		 LEFT JOIN LATERAL (
-		     SELECT id, sender_id, content, key_id, sent_at, gif_id IS NOT NULL AS has_gif FROM messages
+		     SELECT id, sender_id, content, key_id, sent_at, gif_id IS NOT NULL AS has_gif, view_once FROM messages
 		     WHERE room_id = r.id
 		     ORDER BY sent_at DESC, id DESC
 		     LIMIT 1
@@ -242,10 +247,10 @@ func GetMyRooms(c *gin.Context) {
 			lmKeyID                             sql.NullString
 			lmSentAt                            sql.NullTime
 			lmAttachments, lmVideos             int
-			lmHasGif                            bool
+			lmHasGif, lmViewOnce                bool
 		)
 		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerID, &r.CreatedAt, &r.MemberCount, &r.UnreadCount,
-			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif); err != nil {
+			&lmID, &lmSender, &lmPseudo, &lmContent, &lmKeyID, &lmSentAt, &lmAttachments, &lmVideos, &lmHasGif, &lmViewOnce); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan room"})
 			return
 		}
@@ -258,6 +263,7 @@ func GetMyRooms(c *gin.Context) {
 				AttachmentCount: lmAttachments,
 				VideoCount:      lmVideos,
 				HasGif:          lmHasGif,
+				ViewOnce:        lmViewOnce,
 				SentAt:          lmSentAt.Time,
 			}
 		}
@@ -340,7 +346,7 @@ func GetMessages(c *gin.Context) {
 	// fetch one extra row to know whether older messages remain
 	rows, err := db.DB.Query(
 		`SELECT m.id, m.sender_id, u.pseudo, m.content, m.key_id, m.sent_at,
-		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.edited_at,
+		        m.gif_id, m.gif_url, m.gif_width, m.gif_height, m.edited_at, m.view_once,
 		        `+replyPreviewColumns+`
 		 FROM messages m
 		 JOIN users u ON u.id = m.sender_id
@@ -367,7 +373,7 @@ func GetMessages(c *gin.Context) {
 		var keyID sql.NullString
 		var reply nullableReply
 		targets := append([]any{&m.ID, &m.SenderID, &m.SenderPseudo, &m.Content, &keyID, &m.SentAt,
-			&gifID, &gifURL, &gifWidth, &gifHeight, &m.EditedAt}, reply.targets()...)
+			&gifID, &gifURL, &gifWidth, &gifHeight, &m.EditedAt, &m.ViewOnce}, reply.targets()...)
 		if err := rows.Scan(targets...); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan message"})
 			return
@@ -429,6 +435,28 @@ func GetMessages(c *gin.Context) {
 		}
 		for messageID, list := range attachments {
 			messages[index[messageID]].Attachments = list
+		}
+
+		var viewOnceIDs []string
+		for i := range messages {
+			m := &messages[i]
+			if !m.ViewOnce {
+				continue
+			}
+			viewOnceIDs = append(viewOnceIDs, m.ID)
+			m.Opens = make([]messageOpen, 0)
+			for j := range m.Attachments {
+				m.Attachments[j].HasPoster = false // the frame would give it away
+				m.Expired = m.Expired || m.Attachments[j].purged
+			}
+		}
+		opens, err := opensByMessage(viewOnceIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch opens"})
+			return
+		}
+		for messageID, list := range opens {
+			messages[index[messageID]].Opens = list
 		}
 	}
 

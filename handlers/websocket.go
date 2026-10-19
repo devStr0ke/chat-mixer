@@ -39,6 +39,7 @@ type WSMessage struct {
 	ReplyToID     string               `json:"reply_to_id,omitempty"`    // client → server
 	ReplyTo       *replyPreview        `json:"reply_to,omitempty"`       // server → client
 	Attachments   []attachmentResponse `json:"attachments,omitempty"`    // server → client
+	ViewOnce      bool                 `json:"view_once,omitempty"`      // both ways
 }
 
 // --- Hub ---
@@ -271,6 +272,11 @@ func (c *Client) handleMessage(msg WSMessage) {
 	if content == "" && len(msg.AttachmentIDs) == 0 && msg.GifID == "" {
 		return
 	}
+	// a view-once message is one photo or video, nothing else
+	if msg.ViewOnce && (len(msg.AttachmentIDs) != 1 || content != "" || msg.GifID != "") {
+		c.send(mustJSON(WSMessage{Type: "message_error", ClientID: msg.ClientID}))
+		return
+	}
 
 	var gif *messageGif
 	if msg.GifID != "" {
@@ -305,6 +311,7 @@ func (c *Client) handleMessage(msg WSMessage) {
 		AttachmentIDs: msg.AttachmentIDs,
 		Gif:           gif,
 		ReplyToID:     msg.ReplyToID,
+		ViewOnce:      msg.ViewOnce,
 	})
 	if err != nil {
 		log.Printf("ws: failed to save message: %v", err)
@@ -323,6 +330,12 @@ func (c *Client) handleMessage(msg WSMessage) {
 		Attachments:  attachments,
 		Gif:          gif,
 		ReplyTo:      replyTo,
+		ViewOnce:     msg.ViewOnce,
+	}
+	if msg.ViewOnce {
+		for i := range out.Attachments {
+			out.Attachments[i].HasPoster = false // the frame would give it away
+		}
 	}
 	roomMsg := mustJSON(out)
 
@@ -356,6 +369,7 @@ type newMessage struct {
 	AttachmentIDs []string
 	Gif           *messageGif
 	ReplyToID     string // already checked to be a message of this room
+	ViewOnce      bool
 }
 
 // saveMessage stores a message (with its GIF and reply target, if any) and
@@ -394,10 +408,10 @@ func (c *Client) saveMessage(m newMessage) (id string, sentAt time.Time, attachm
 	id = uuid.NewString()
 	sealed, keyID := sealMessage(c.RoomID, id, content)
 	if err = tx.QueryRow(
-		`INSERT INTO messages (id, room_id, sender_id, content, key_id, gif_id, gif_url, gif_width, gif_height, reply_to_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO messages (id, room_id, sender_id, content, key_id, gif_id, gif_url, gif_width, gif_height, reply_to_id, view_once)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 RETURNING sent_at`,
-		id, c.RoomID, c.UserID, sealed, keyID, gifID, gifURL, gifWidth, gifHeight, replyToID,
+		id, c.RoomID, c.UserID, sealed, keyID, gifID, gifURL, gifWidth, gifHeight, replyToID, m.ViewOnce,
 	).Scan(&sentAt); err != nil {
 		return "", time.Time{}, nil, err
 	}

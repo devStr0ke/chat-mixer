@@ -57,12 +57,12 @@ func EditMessage(c *gin.Context) {
 		roomID, senderID, current string
 		currentKeyID              sql.NullString
 		editedAt                  *time.Time
-		hasMedia                  bool
+		hasMedia, viewOnce        bool
 		edits                     int
 	)
 	// the row lock keeps concurrent edits of the same message in order
 	err = tx.QueryRow(
-		`SELECT m.room_id, m.sender_id, m.content, m.key_id, m.edited_at,
+		`SELECT m.room_id, m.sender_id, m.content, m.key_id, m.edited_at, m.view_once,
 		        m.gif_id IS NOT NULL OR EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id),
 		        (SELECT COUNT(*) FROM message_edits e WHERE e.message_id = m.id)
 		 FROM messages m
@@ -70,7 +70,7 @@ func EditMessage(c *gin.Context) {
 		 WHERE m.id = $1
 		 FOR UPDATE OF m`,
 		messageID, userID,
-	).Scan(&roomID, &senderID, &current, &currentKeyID, &editedAt, &hasMedia, &edits)
+	).Scan(&roomID, &senderID, &current, &currentKeyID, &editedAt, &viewOnce, &hasMedia, &edits)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
 		return
@@ -81,6 +81,10 @@ func EditMessage(c *gin.Context) {
 	}
 	if senderID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own messages"})
+		return
+	}
+	if viewOnce {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "view-once messages can't be edited"})
 		return
 	}
 	current = openMessage(roomID, messageID, current, currentKeyID)

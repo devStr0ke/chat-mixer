@@ -21,6 +21,7 @@ Real-time group chat backend. Users create rooms, invite people by pseudo, and c
 - Per-room appearance (background color or image, bubble colors): any member can change it, everyone sees it
 - Message history is paginated
 - A global notification channel pushes new-message previews, invitations and room removals
+- View-once photos and videos: each member can open one once, the sender sees who opened it, and the file is deleted once everyone has (or after 14 days)
 - Encryption at rest: message text, edit history, cached link previews and every stored file are encrypted, so a leaked database or bucket can't be read on its own (see [Encryption](#encryption))
 
 ---
@@ -111,6 +112,7 @@ handlers/
   reactions.go        — message reactions
   attachments.go      — photo/video upload and download (with Range)
   videos.go           — video type detection, streamed storage, poster frames
+  viewonce.go         — opening view-once messages, who opened what
   profile.go          — profile, countries and avatars
   gifs.go             — GIPHY search proxy (cached) and GIF lookup
   replies.go          — quoted-message previews for replies
@@ -123,6 +125,7 @@ linkpreview/          — SSRF-safe page fetcher and Open Graph parser (with tes
   content.go          — sealing and opening message text
 storage/s3.go         — S3 client for the attachments bucket (SSE-C encrypted)
 workers/attachments.go — hourly cleanup of unsent uploads and stale link previews
+workers/viewonce.go   — deletes view-once files once everyone opened them (or after 14 days)
 workers/encryption.go — startup sweep: encrypts older rows and files, re-encrypts after a key change
 models/               — User, Room, RoomMember, RoomInvitation, Message
 docker-compose.yml    — postgres + pgAdmin + Garage + API
@@ -202,6 +205,13 @@ Uploads are private until a message references them; ones never sent are deleted
 Videos are stored as uploaded, not re-encoded: they're streamed to the bucket (never held in memory) and play in the browser's own player. MOV files are served as `video/mp4`, which every browser accepts for the H.264 that iPhones export; an HEVC video plays only where the browser and device can decode HEVC.
 
 The web app uploads straight to the API rather than through its `/api` rewrite, because Next.js caps proxied request bodies at 10 MB. That route alone answers CORS preflights, for the origins in `CORS_ORIGINS`; it authenticates with the `Authorization` header only, never cookies.
+
+### View once
+| Method | Route | Description |
+|---|---|---|
+| POST | `/messages/:message_id/open` | Open a view-once message (members other than the sender, once each). Returns `{ attachment, expires_in }`: the file can be fetched for `expires_in` seconds (2 minutes for a photo, a video's length + 2 minutes, at most 15). A second call returns `410`; the sender gets `403` |
+
+A view-once message is sent over the WebSocket with `"view_once": true` and exactly one attachment (no text or GIF). In history it carries `view_once`, `opens` (`[{ user_id, opened_at }]`, missing until someone opens it) and `expired`; its attachment never advertises a poster, and `GET /attachments/:id` only serves the file to someone inside their viewing window (with `Cache-Control: no-store`). Every member gets `{ "type": "message_opened", "id", "user_id", "opened_at" }` when someone opens it. It can't be edited. The file is deleted once every other member has opened it and the last window has closed, or 14 days after sending; the message then shows as expired. A web page can't prevent screenshots: view-once means it can't be reopened, not that it can't be captured.
 
 ### Editing
 | Method | Route | Description |

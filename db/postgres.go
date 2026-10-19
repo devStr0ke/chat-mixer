@@ -137,6 +137,16 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS duration_ms INT,
 			ADD COLUMN IF NOT EXISTS poster_key  TEXT`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS view_once BOOLEAN NOT NULL DEFAULT false`,
+		// who opened a view-once message and when: each member can open it once
+		`CREATE TABLE IF NOT EXISTS message_opens (
+			message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			opened_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (message_id, user_id)
+		)`,
+		// set when a view-once file has been deleted from the bucket
+		`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS purged_at TIMESTAMP`,
 		// previous versions of edited messages; written_at is when that version was typed
 		`CREATE TABLE IF NOT EXISTS message_edits (
 			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

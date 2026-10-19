@@ -17,6 +17,7 @@ import (
 
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/storage"
+	"github.com/devstr0ke/chat-mixer/workers"
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 	_ "golang.org/x/image/webp"
@@ -45,6 +46,7 @@ type attachmentResponse struct {
 	Size        int64  `json:"size"`
 	DurationMs  int    `json:"duration_ms,omitempty"` // videos
 	HasPoster   bool   `json:"has_poster,omitempty"`  // videos with a poster frame
+	purged      bool   // view-once file already deleted
 }
 
 // UploadAttachment stores an image or video in the bucket. It stays private
@@ -227,20 +229,36 @@ func GetAttachment(c *gin.Context) {
 		return
 	}
 
-	var key, contentType string
+	var (
+		key, contentType          string
+		viewOnce, purged, viewing bool
+	)
 	err := db.DB.QueryRow(
-		`SELECT a.object_key, a.content_type
+		`SELECT a.object_key, a.content_type, COALESCE(m.view_once, false), a.purged_at IS NOT NULL,
+		        o.opened_at IS NOT NULL AND EXTRACT(EPOCH FROM NOW() - o.opened_at) < `+workers.ViewWindowSQL+`
 		 FROM attachments a
 		 JOIN room_members rm ON rm.room_id = a.room_id AND rm.user_id = $2
+		 LEFT JOIN messages m ON m.id = a.message_id
+		 LEFT JOIN message_opens o ON o.message_id = a.message_id AND o.user_id = $2
 		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)`,
 		id, userID,
-	).Scan(&key, &contentType)
+	).Scan(&key, &contentType, &viewOnce, &purged, &viewing)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch attachment"})
+		return
+	}
+
+	// view-once: only while the opener's viewing window is open (never the sender)
+	if viewOnce && purged {
+		c.JSON(http.StatusGone, gin.H{"error": "this has expired"})
+		return
+	}
+	if viewOnce && !viewing {
+		c.JSON(http.StatusForbidden, gin.H{"error": "view-once: it can only be opened once"})
 		return
 	}
 
@@ -253,6 +271,10 @@ func GetAttachment(c *gin.Context) {
 	defer obj.Close()
 
 	setImageHeaders(c)
+	if viewOnce {
+		// nothing left in the browser cache to look at again
+		c.Header("Cache-Control", "no-store")
+	}
 	c.Header("Content-Type", servedVideoType(contentType))
 	// handles Range requests: videos stream and seek instead of downloading whole
 	http.ServeContent(c.Writer, c.Request, "", time.Time{}, obj)
@@ -267,7 +289,7 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 
 	rows, err := db.DB.Query(
 		`SELECT message_id, id, content_type, width, height, size_bytes,
-		        COALESCE(duration_ms, 0), poster_key IS NOT NULL
+		        COALESCE(duration_ms, 0), poster_key IS NOT NULL, purged_at IS NOT NULL
 		 FROM attachments
 		 WHERE message_id = ANY($1::uuid[])
 		 ORDER BY position ASC, id ASC`,
@@ -281,7 +303,7 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 	for rows.Next() {
 		var messageID string
 		var a attachmentResponse
-		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster); err != nil {
+		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster, &a.purged); err != nil {
 			return nil, err
 		}
 		result[messageID] = append(result[messageID], a)

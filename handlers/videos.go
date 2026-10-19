@@ -167,7 +167,9 @@ func GetAttachmentPoster(c *gin.Context) {
 		`SELECT a.poster_key
 		 FROM attachments a
 		 JOIN room_members rm ON rm.room_id = a.room_id AND rm.user_id = $2
-		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)`,
+		 LEFT JOIN messages m ON m.id = a.message_id
+		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)
+		   AND NOT COALESCE(m.view_once, false)`, // a view-once video's frame would give it away
 		id, userID,
 	).Scan(&posterKey)
 	if err != nil || !posterKey.Valid {

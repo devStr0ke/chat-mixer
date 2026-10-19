@@ -18,9 +18,11 @@ func StartAttachmentCleanup(database *sql.DB) {
 	go func() {
 		deleteUnsentAttachments(database)
 		deleteStaleLinkPreviews(database)
+		PurgeViewOnce(database)
 		for range ticker.C {
 			deleteUnsentAttachments(database)
 			deleteStaleLinkPreviews(database)
+			PurgeViewOnce(database)
 		}
 	}()
 
