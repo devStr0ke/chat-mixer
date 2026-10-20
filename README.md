@@ -150,7 +150,7 @@ Everything users write is encrypted before it's stored, with keys derived from `
 |---|---|
 | Message text and every earlier version of edited messages | AES-256-GCM, bound to the message's room and id: a ciphertext copied onto another message or into another room won't decrypt |
 | Link-preview cache (URL, title, description, site) | AES-256-GCM; looked up by a keyed hash (HMAC-SHA256), so the cache can't be checked for a guessed URL |
-| Photos, videos, posters, avatars, backgrounds, preview images | SSE-C: the API hands Garage the key with each request; Garage encrypts what it stores and never keeps the key. Range reads still work |
+| Photos, videos, posters, video overlays, avatars, backgrounds, preview images | SSE-C: the API hands Garage the key with each request; Garage encrypts what it stores and never keeps the key. Range reads still work |
 | Request logs | query strings (shared URLs, GIF searches) are left out |
 
 Still readable in the database: accounts (pseudo, email, countries; passwords are bcrypt hashes), room names and themes, who is in which room, when messages were sent, reactions, and file sizes and types.
@@ -205,9 +205,10 @@ Users everywhere in the API (members, search, invitations, auth) include `countr
 ### Attachments
 | Method | Route | Description |
 |---|---|---|
-| POST | `/rooms/:room_id/attachments` | Upload a photo or video (multipart field `file`). Photos: JPEG, PNG, GIF or WebP, max 10 MB. Videos: MP4, MOV or WebM, max 100 MB, with optional fields `poster` (a JPEG/PNG/WebP frame, max 2 MB, which also gives the video's `width`/`height`) and `duration_ms`. Types are checked from the file content. Returns `{ id, content_type, width, height, size }`, plus `duration_ms` and `has_poster` for videos |
+| POST | `/rooms/:room_id/attachments` | Upload a photo or video (multipart field `file`). Photos: JPEG, PNG, GIF or WebP, max 10 MB. Videos: MP4, MOV or WebM, max 100 MB, with optional fields `poster` (a JPEG/PNG/WebP frame, max 2 MB, which also gives the video's `width`/`height`), `duration_ms` and `overlay` (a transparent PNG/WebP the video's size, max 2 MB: text and drawings from the in-app camera, shown on top during playback). Types are checked from the file content. Returns `{ id, content_type, width, height, size }`, plus `duration_ms`, `has_poster` and `has_overlay` for videos |
 | GET | `/attachments/:attachment_id` | The file, for room members once it's been sent (and for its uploader before). Supports `Range` requests, so videos stream and seek. Also accepts the `token` cookie so `<img>`/`<video>` tags work |
 | GET | `/attachments/:attachment_id/poster` | A video's poster frame (same access rules) |
+| GET | `/attachments/:attachment_id/overlay` | The text and drawings laid over a camera video (same access rules as the video, view-once window included) |
 
 Uploads are private until a message references them; ones never sent are deleted after 24 hours. Deleting a room deletes its files.
 

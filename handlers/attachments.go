@@ -46,6 +46,7 @@ type attachmentResponse struct {
 	Size        int64  `json:"size"`
 	DurationMs  int    `json:"duration_ms,omitempty"` // videos
 	HasPoster   bool   `json:"has_poster,omitempty"`  // videos with a poster frame
+	HasOverlay  bool   `json:"has_overlay,omitempty"` // camera videos with text or drawings on top
 	purged      bool   // view-once file already deleted
 }
 
@@ -63,7 +64,7 @@ func UploadAttachment(c *gin.Context) {
 	}
 
 	// room for the largest file type (videos) plus the poster and form fields
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxVideoBytes+maxPosterBytes+1<<20)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxVideoBytes+maxPosterBytes+maxOverlayBytes+1<<20)
 	fh, err := c.FormFile("file")
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -219,49 +220,10 @@ func setImageHeaders(c *gin.Context) {
 // GetAttachment streams an image to room members (or to its uploader before
 // it's sent). Accepts the token cookie since <img> tags can't send headers.
 func GetAttachment(c *gin.Context) {
-	userID := c.GetString("userID")
-	id, ok := uuidParam(c, "attachment_id", "attachment not found")
+	key, contentType, viewOnce, ok := attachmentObject(c, "a.object_key")
 	if !ok {
 		return
 	}
-	if !storage.Enabled() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
-		return
-	}
-
-	var (
-		key, contentType          string
-		viewOnce, purged, viewing bool
-	)
-	err := db.DB.QueryRow(
-		`SELECT a.object_key, a.content_type, COALESCE(m.view_once, false), a.purged_at IS NOT NULL,
-		        o.opened_at IS NOT NULL AND EXTRACT(EPOCH FROM NOW() - o.opened_at) < `+workers.ViewWindowSQL+`
-		 FROM attachments a
-		 JOIN room_members rm ON rm.room_id = a.room_id AND rm.user_id = $2
-		 LEFT JOIN messages m ON m.id = a.message_id
-		 LEFT JOIN message_opens o ON o.message_id = a.message_id AND o.user_id = $2
-		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)`,
-		id, userID,
-	).Scan(&key, &contentType, &viewOnce, &purged, &viewing)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch attachment"})
-		return
-	}
-
-	// view-once: only while the opener's viewing window is open (never the sender)
-	if viewOnce && purged {
-		c.JSON(http.StatusGone, gin.H{"error": "this has expired"})
-		return
-	}
-	if viewOnce && !viewing {
-		c.JSON(http.StatusForbidden, gin.H{"error": "view-once: it can only be opened once"})
-		return
-	}
-
 	obj, _, err := storage.Get(c.Request.Context(), key)
 	if err != nil {
 		log.Printf("storage: get %s failed: %v", key, err)
@@ -280,6 +242,80 @@ func GetAttachment(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, "", time.Time{}, obj)
 }
 
+// GetAttachmentOverlay streams the text and drawings put on top of a camera
+// video (a transparent image the size of the video), with the same access
+// rules as the video itself.
+func GetAttachmentOverlay(c *gin.Context) {
+	key, _, viewOnce, ok := attachmentObject(c, "a.overlay_key")
+	if !ok {
+		return
+	}
+	obj, info, err := storage.Get(c.Request.Context(), key)
+	if err != nil {
+		log.Printf("storage: get %s failed: %v", key, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch attachment"})
+		return
+	}
+	defer obj.Close()
+
+	setImageHeaders(c)
+	if viewOnce {
+		c.Header("Cache-Control", "no-store")
+	}
+	c.Header("Content-Type", info.ContentType)
+	http.ServeContent(c.Writer, c.Request, "", time.Time{}, obj)
+}
+
+// attachmentObject finds the bucket key in column (a.object_key or
+// a.overlay_key) of the requested attachment, if the user may read it: a
+// member of the room, and for view-once only while their viewing window is
+// open (never the sender). Otherwise it answers the request itself.
+func attachmentObject(c *gin.Context, column string) (key, contentType string, viewOnce, ok bool) {
+	userID := c.GetString("userID")
+	id, ok := uuidParam(c, "attachment_id", "attachment not found")
+	if !ok {
+		return "", "", false, false
+	}
+	if !storage.Enabled() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
+		return "", "", false, false
+	}
+
+	var (
+		objectKey       sql.NullString
+		purged, viewing bool
+	)
+	err := db.DB.QueryRow(
+		`SELECT `+column+`, a.content_type, COALESCE(m.view_once, false), a.purged_at IS NOT NULL,
+		        o.opened_at IS NOT NULL AND EXTRACT(EPOCH FROM NOW() - o.opened_at) < `+workers.ViewWindowSQL+`
+		 FROM attachments a
+		 JOIN room_members rm ON rm.room_id = a.room_id AND rm.user_id = $2
+		 LEFT JOIN messages m ON m.id = a.message_id
+		 LEFT JOIN message_opens o ON o.message_id = a.message_id AND o.user_id = $2
+		 WHERE a.id = $1 AND (a.message_id IS NOT NULL OR a.uploader_id = $2)`,
+		id, userID,
+	).Scan(&objectKey, &contentType, &viewOnce, &purged, &viewing)
+	if err == sql.ErrNoRows || (err == nil && !objectKey.Valid) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
+		return "", "", false, false
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch attachment"})
+		return "", "", false, false
+	}
+
+	// view-once: only while the opener's viewing window is open (never the sender)
+	if viewOnce && purged {
+		c.JSON(http.StatusGone, gin.H{"error": "this has expired"})
+		return "", "", false, false
+	}
+	if viewOnce && !viewing {
+		c.JSON(http.StatusForbidden, gin.H{"error": "view-once: it can only be opened once"})
+		return "", "", false, false
+	}
+	return objectKey.String, contentType, viewOnce, true
+}
+
 // attachmentsByMessage loads the attachments of the given messages, in the order they were sent.
 func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse, error) {
 	result := make(map[string][]attachmentResponse)
@@ -289,7 +325,7 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 
 	rows, err := db.DB.Query(
 		`SELECT message_id, id, content_type, width, height, size_bytes,
-		        COALESCE(duration_ms, 0), poster_key IS NOT NULL, purged_at IS NOT NULL
+		        COALESCE(duration_ms, 0), poster_key IS NOT NULL, overlay_key IS NOT NULL, purged_at IS NOT NULL
 		 FROM attachments
 		 WHERE message_id = ANY($1::uuid[])
 		 ORDER BY position ASC, id ASC`,
@@ -303,7 +339,7 @@ func attachmentsByMessage(messageIDs []string) (map[string][]attachmentResponse,
 	for rows.Next() {
 		var messageID string
 		var a attachmentResponse
-		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster, &a.purged); err != nil {
+		if err := rows.Scan(&messageID, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasPoster, &a.HasOverlay, &a.purged); err != nil {
 			return nil, err
 		}
 		result[messageID] = append(result[messageID], a)

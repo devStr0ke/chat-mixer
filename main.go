@@ -124,6 +124,7 @@ func main() {
 
 	r.GET("/attachments/:attachment_id", middleware.AuthRequiredOrCookie(), handlers.GetAttachment)
 	r.GET("/attachments/:attachment_id/poster", middleware.AuthRequiredOrCookie(), handlers.GetAttachmentPoster)
+	r.GET("/attachments/:attachment_id/overlay", middleware.AuthRequiredOrCookie(), handlers.GetAttachmentOverlay)
 	r.GET("/avatars/:avatar_id", middleware.AuthRequiredOrCookie(), handlers.GetAvatar)
 	r.GET("/stickers/:sticker_id/image", middleware.AuthRequiredOrCookie(), handlers.GetStickerImage)
 	r.GET("/rooms/:room_id/background/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetRoomBackground)

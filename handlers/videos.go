@@ -22,6 +22,7 @@ import (
 const (
 	maxVideoBytes      = 100 << 20
 	maxPosterBytes     = 2 << 20
+	maxOverlayBytes    = 2 << 20
 	maxVideoDurationMs = 24 * 60 * 60 * 1000
 	videoStoreTimeout  = 3 * time.Minute
 )
@@ -97,6 +98,18 @@ func storeVideoAttachment(c *gin.Context, userID, roomID string, fh *multipart.F
 			}
 		}
 	}
+	// text and drawings from the camera, kept as a transparent image shown on top
+	var overlay []byte
+	var overlayType string
+	if ofh, err := c.FormFile("overlay"); err == nil && ofh.Size <= maxOverlayBytes {
+		if of, err := ofh.Open(); err == nil {
+			data, _ := io.ReadAll(io.LimitReader(of, maxOverlayBytes+1))
+			of.Close()
+			if ct, _, status, _ := checkImage(data); status == 0 && (ct == "image/png" || ct == "image/webp") {
+				overlay, overlayType = data, ct
+			}
+		}
+	}
 	durationMs, _ := strconv.Atoi(c.PostForm("duration_ms"))
 	durationMs = max(0, min(durationMs, maxVideoDurationMs))
 
@@ -124,15 +137,32 @@ func storeVideoAttachment(c *gin.Context, userID, roomID string, fh *multipart.F
 			posterKey = sql.NullString{String: pk, Valid: true}
 		}
 	}
+	var overlayKey sql.NullString
+	if overlay != nil {
+		ovk := fmt.Sprintf("rooms/%s/%s-overlay.%s", roomID, id, allowedImageTypes[overlayType])
+		if err := storage.Put(ctx, ovk, overlayType, overlay); err != nil {
+			// without it the video would go out missing what was written on it
+			log.Printf("storage: put overlay failed: %v", err)
+			storage.Delete(context.Background(), key)
+			if posterKey.Valid {
+				storage.Delete(context.Background(), posterKey.String)
+			}
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store file"})
+			return
+		}
+		overlayKey = sql.NullString{String: ovk, Valid: true}
+	}
 
 	if _, err := db.DB.Exec(
-		`INSERT INTO attachments (id, room_id, uploader_id, object_key, content_type, size_bytes, width, height, duration_ms, poster_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		id, roomID, userID, key, contentType, fh.Size, width, height, durationMs, posterKey,
+		`INSERT INTO attachments (id, room_id, uploader_id, object_key, content_type, size_bytes, width, height, duration_ms, poster_key, overlay_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		id, roomID, userID, key, contentType, fh.Size, width, height, durationMs, posterKey, overlayKey,
 	); err != nil {
 		storage.Delete(context.Background(), key)
-		if posterKey.Valid {
-			storage.Delete(context.Background(), posterKey.String)
+		for _, k := range []sql.NullString{posterKey, overlayKey} {
+			if k.Valid {
+				storage.Delete(context.Background(), k.String)
+			}
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file"})
 		return
@@ -146,6 +176,7 @@ func storeVideoAttachment(c *gin.Context, userID, roomID string, fh *multipart.F
 		Size:        fh.Size,
 		DurationMs:  durationMs,
 		HasPoster:   posterKey.Valid,
+		HasOverlay:  overlayKey.Valid,
 	})
 }
 

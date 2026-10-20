@@ -136,6 +136,8 @@ func Migrate() {
 		`ALTER TABLE attachments
 			ADD COLUMN IF NOT EXISTS duration_ms INT,
 			ADD COLUMN IF NOT EXISTS poster_key  TEXT`,
+		// text and drawings added on top of a camera video, as a transparent image
+		`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS overlay_key TEXT`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS view_once BOOLEAN NOT NULL DEFAULT false`,
 		// who opened a view-once message and when: each member can open it once

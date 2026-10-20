@@ -40,12 +40,12 @@ func OpenViewOnce(c *gin.Context) {
 	)
 	err := db.DB.QueryRow(
 		`SELECT m.sender_id, m.view_once, a.id, a.content_type, a.width, a.height, a.size_bytes,
-		        COALESCE(a.duration_ms, 0), a.purged_at IS NOT NULL, `+workers.ViewWindowSQL+`
+		        COALESCE(a.duration_ms, 0), a.overlay_key IS NOT NULL, a.purged_at IS NOT NULL, `+workers.ViewWindowSQL+`
 		 FROM messages m
 		 JOIN attachments a ON a.message_id = m.id
 		 WHERE m.id = $1`,
 		messageID,
-	).Scan(&senderID, &viewOnce, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &purged, &window)
+	).Scan(&senderID, &viewOnce, &a.ID, &a.ContentType, &a.Width, &a.Height, &a.Size, &a.DurationMs, &a.HasOverlay, &purged, &window)
 	if err == sql.ErrNoRows || (err == nil && !viewOnce) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not a view-once message"})
 		return

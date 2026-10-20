@@ -38,26 +38,14 @@ func PurgeViewOnce(database *sql.DB) {
 		       )
 		     )
 		   )
-		 RETURNING a.object_key, a.poster_key`,
+		 RETURNING a.object_key, a.poster_key, a.overlay_key`,
 	)
 	if err != nil {
 		log.Printf("worker: view-once purge query failed: %v", err)
 		return
 	}
 
-	var keys []string
-	purged := 0
-	for rows.Next() {
-		var key string
-		var posterKey sql.NullString
-		if err := rows.Scan(&key, &posterKey); err == nil {
-			purged++
-			keys = append(keys, key)
-			if posterKey.Valid {
-				keys = append(keys, posterKey.String)
-			}
-		}
-	}
+	keys, purged := AttachmentKeys(rows)
 	rows.Close()
 
 	if !storage.Enabled() {
@@ -73,4 +61,24 @@ func PurgeViewOnce(database *sql.DB) {
 	if purged > 0 {
 		log.Printf("worker: deleted %d opened or expired view-once files", purged)
 	}
+}
+
+// AttachmentKeys reads rows of (object_key, poster_key, overlay_key) into the
+// bucket keys to delete, and how many attachments they came from.
+func AttachmentKeys(rows *sql.Rows) (keys []string, count int) {
+	for rows.Next() {
+		var key string
+		var poster, overlay sql.NullString
+		if err := rows.Scan(&key, &poster, &overlay); err != nil {
+			continue
+		}
+		count++
+		keys = append(keys, key)
+		for _, k := range []sql.NullString{poster, overlay} {
+			if k.Valid {
+				keys = append(keys, k.String)
+			}
+		}
+	}
+	return keys, count
 }

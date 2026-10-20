@@ -2,13 +2,13 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/devstr0ke/chat-mixer/db"
 	"github.com/devstr0ke/chat-mixer/storage"
+	"github.com/devstr0ke/chat-mixer/workers"
 	"github.com/gin-gonic/gin"
 )
 
@@ -72,22 +72,12 @@ func DeleteMessage(c *gin.Context) {
 		}
 	}
 
-	rows, err := tx.Query(`DELETE FROM attachments WHERE message_id = $1 RETURNING object_key, poster_key`, messageID)
+	rows, err := tx.Query(`DELETE FROM attachments WHERE message_id = $1 RETURNING object_key, poster_key, overlay_key`, messageID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete message"})
 		return
 	}
-	var keys []string
-	for rows.Next() {
-		var key string
-		var posterKey sql.NullString
-		if err := rows.Scan(&key, &posterKey); err == nil {
-			keys = append(keys, key)
-			if posterKey.Valid {
-				keys = append(keys, posterKey.String)
-			}
-		}
-	}
+	keys, _ := workers.AttachmentKeys(rows)
 	rows.Close()
 
 	if err := tx.Commit(); err != nil {
