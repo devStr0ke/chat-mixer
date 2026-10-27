@@ -177,3 +177,11 @@ func TestFetchRefusesInternalAddresses(t *testing.T) {
 		t.Error("the internal server received a request")
 	}
 }
+
+func TestParseReadsThePageAddress(t *testing.T) {
+	base, _ := url.Parse("https://www.instagram.com/share/reel/BAabc")
+	m := Parse(strings.NewReader(`<head><meta property="og:url" content="/reel/C1abc/"></head>`), base)
+	if m.URL != "https://www.instagram.com/reel/C1abc/" {
+		t.Errorf("URL = %q", m.URL)
+	}
+}

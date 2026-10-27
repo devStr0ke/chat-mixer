@@ -49,6 +49,7 @@ type Metadata struct {
 	Description string
 	SiteName    string
 	ImageURL    string // absolute http(s) URL, or empty
+	URL         string // the page's own address (og:url), absolute, or empty
 }
 
 // NormalizeURL checks that a user-supplied string is a plain http(s) web
@@ -171,6 +172,51 @@ func get(ctx context.Context, target, accept string) (*http.Response, error) {
 	return resp, nil
 }
 
+// Follow walks the redirects of target (a short share link) and returns the
+// address it settles on: the first one for which settled is true. Every hop
+// must pass allowed, and nothing past the redirects is downloaded.
+func Follow(ctx context.Context, target string, allowed, settled func(*url.URL) bool) (string, error) {
+	var final *url.URL
+	follower := &http.Client{
+		Timeout:   requestTimeout,
+		Transport: client.Transport, // same guarded dialer: public addresses only
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return errors.New("too many redirects")
+			}
+			if _, err := NormalizeURL(req.URL.String()); err != nil || !allowed(req.URL) {
+				return ErrBlockedAddress
+			}
+			if settled(req.URL) {
+				final = req.URL
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", ErrInvalidURL
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := follower.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	// some share links answer with a page naming the real address instead of redirecting
+	if final == nil && resp.StatusCode == http.StatusOK {
+		page := Parse(io.LimitReader(resp.Body, maxHTMLBytes), resp.Request.URL)
+		if u, err := url.Parse(page.URL); err == nil && page.URL != "" && allowed(u) && settled(u) {
+			final = u
+		}
+	}
+	if final == nil {
+		return "", errors.New("the link didn't lead anywhere")
+	}
+	return final.String(), nil
+}
+
 // Fetch downloads pageURL and extracts its preview metadata.
 func Fetch(ctx context.Context, pageURL string) (Metadata, error) {
 	resp, err := get(ctx, pageURL, "text/html,application/xhtml+xml")
@@ -260,6 +306,8 @@ loop:
 					setOnce(&og.SiteName, content)
 				case "og:image", "og:image:url", "og:image:secure_url":
 					setOnce(&og.ImageURL, content)
+				case "og:url":
+					setOnce(&og.URL, content)
 				case "twitter:title":
 					setOnce(&twitter.Title, content)
 				case "twitter:description":
@@ -286,7 +334,8 @@ loop:
 		Title:       clean(firstNonEmpty(og.Title, twitter.Title, plain.Title), maxTitleRunes),
 		Description: clean(firstNonEmpty(og.Description, twitter.Description, plain.Description), maxDescRunes),
 		SiteName:    clean(og.SiteName, maxTitleRunes),
-		ImageURL:    resolveImage(firstNonEmpty(og.ImageURL, twitter.ImageURL), base),
+		ImageURL:    resolveURL(firstNonEmpty(og.ImageURL, twitter.ImageURL), base),
+		URL:         resolveURL(og.URL, base),
 	}
 }
 
@@ -315,7 +364,8 @@ func clean(s string, max int) string {
 	return strings.TrimSpace(string(runes[:max-1])) + "…"
 }
 
-func resolveImage(raw string, base *url.URL) string {
+// resolveURL makes raw (an image or page address from the page) absolute against base, or empty.
+func resolveURL(raw string, base *url.URL) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""

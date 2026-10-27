@@ -251,6 +251,7 @@ Messages carry `edited_at` (null until edited). Edits are announced with `messag
 |---|---|---|
 | GET | `/link-preview?url=` | Card data for a web page: `{ url, title, description, site_name, image_id, image_width, image_height }`, or `404` when it has no usable preview |
 | GET | `/link-previews/images/:image_id` | Our stored copy of the page's preview image (accepts the `token` cookie) |
+| GET | `/link-embed?url=` | The full address behind a short TikTok or Instagram share link (`vm.tiktok.com/…`, `vt.tiktok.com/…`, `tiktok.com/t/…`, `instagram.com/share/…`), `{ url }`, so the app can play it in place. Only those sites' own redirects (or the share page's `og:url`) are followed; cached for a day, rate limited with link previews |
 
 The server fetches pages itself, so viewers never contact the linked site. Because the URL comes from users, the fetcher (`linkpreview/`) only connects to public IP addresses on ports 80/443 — checked on the resolved address, for every redirect — and caps sizes and time. Results are cached in the database (7 days, 1 hour for failures), uncached lookups are limited to 20 per user per minute, and previews unused for 30 days are purged.
 

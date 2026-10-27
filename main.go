@@ -90,6 +90,7 @@ func main() {
 	r.POST("/rooms/:room_id/attachments", uploadCORS, protected, handlers.UploadAttachment)
 
 	r.GET("/link-preview", protected, handlers.GetLinkPreview)
+	r.GET("/link-embed", protected, handlers.ResolveVideoLink)
 	r.GET("/link-previews/images/:image_id", middleware.AuthRequiredOrCookie(), handlers.GetLinkPreviewImage)
 
 	gifs := r.Group("/gifs", protected)
